@@ -852,9 +852,49 @@ def _enforce_region_scope(question: str, answer: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
+def _is_east_only_question(question: str) -> bool:
+    q = question or ""
+    return bool(_EAST_ONLY_Q_RE.search(q) and not _WEST_Q_RE.search(q))
+
+
+def _filter_rows_for_east_scope(rows: list[dict]) -> list[dict]:
+    """For East-only asks, remove rows that explicitly mention West in any value."""
+    if not rows:
+        return rows
+    kept: list[dict] = []
+    for r in rows:
+        vals = " ".join(str(v) for v in r.values() if v is not None)
+        if re.search(r"\bwest\b", vals, flags=re.IGNORECASE):
+            continue
+        kept.append(r)
+    return kept if kept else rows
+
+
+def _filter_chart_for_east_scope(chart: dict | None) -> dict | None:
+    """For East-only asks, drop chart rows/slices with West labels."""
+    if not chart or not isinstance(chart, dict):
+        return chart
+    data = chart.get("data")
+    if not isinstance(data, list):
+        return chart
+    filtered: list[dict] = []
+    for d in data:
+        if not isinstance(d, dict):
+            continue
+        label_blob = " ".join(str(v) for v in d.values() if isinstance(v, (str, int, float)))
+        if re.search(r"\bwest\b", label_blob, flags=re.IGNORECASE):
+            continue
+        filtered.append(d)
+    if len(filtered) >= 1:
+        out = dict(chart)
+        out["data"] = filtered
+        return out
+    return chart
+
+
 def _cache_key(question: str) -> str:
     # Versioned to invalidate stale cached answers after output/cleaning logic updates.
-    return "v5|" + " ".join((question or "").strip().lower().split())
+    return "v6|" + " ".join((question or "").strip().lower().split())
 
 
 def _cache_schema_name() -> str:
@@ -927,6 +967,8 @@ def _run_single_question(
 
     sql_out = (resp.sql or "").strip() or "(sql-agent)"
     rows = _drop_unfilled_entity_rows(resp.results or [])
+    if _is_east_only_question(q):
+        rows = _filter_rows_for_east_scope(rows)
     answer = sanitize_user_visible_text(strip_sql_from_nl_chat_markup(resp.content or "")) or ""
     answer = _remove_sql_logic_from_answer(answer)
     answer = _remove_markdown_tables(answer)
@@ -972,6 +1014,8 @@ def _run_single_question(
     # chart: only when the question + data clearly benefit from a visualisation.
     if not err and rows:
         chart = _suggest_chart(q, rows)
+        if _is_east_only_question(q):
+            chart = _filter_chart_for_east_scope(chart)
         if chart:
             out["chart"] = chart
         elif _RELATIONSHIP_RE.search(q):
