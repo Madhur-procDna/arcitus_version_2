@@ -91,8 +91,8 @@ interface QueryParams {
  * Where to POST /query (JSON body — no query string; avoids URL length limits on previous_sql):
  * - If NEXT_PUBLIC_SERVER_URL is set → browser calls FastAPI **POST /query** (needs CORS).
  *   Use the API **origin only** (e.g. http://127.0.0.1:8000), not .../api — FastAPI has no /api prefix.
- * - Else in development → same-origin **POST /api/query** (Next proxies to SDA_BACKEND_URL).
- * - Production without proxy URL → set NEXT_PUBLIC_SERVER_URL to your public API origin.
+ * - Else → same-origin **POST /api/query** (Next proxies to SDA_BACKEND_URL).
+ *   This works in both development and production.
  */
 function buildQueryUrl(): string {
   const direct = process.env.NEXT_PUBLIC_SERVER_URL?.trim().replace(/\/$/, '');
@@ -101,12 +101,7 @@ function buildQueryUrl(): string {
     const base = direct.replace(/\/api\/?$/, '');
     return new URL('/query', base.endsWith('/') ? base : `${base}/`).toString();
   }
-  if (process.env.NODE_ENV === 'development') {
-    return '/api/query';
-  }
-  throw new Error(
-    'Set NEXT_PUBLIC_SERVER_URL in .env.local for production builds, or run `next dev` to use the /api/query proxy.'
-  );
+  return '/api/query';
 }
 
 function parseChartPayload(
