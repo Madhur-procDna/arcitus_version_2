@@ -2,7 +2,7 @@ services:
   - type: web
     name: gilead-backend
     runtime: python
-    plan: starter
+    plan: free
     rootDir: Backend/src
     buildCommand: pip install -r ../requirements.txt
     startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
@@ -44,7 +44,7 @@ services:
   - type: web
     name: gilead-frontend
     runtime: node
-    plan: starter
+    plan: free
     rootDir: Frontendd
     buildCommand: npm ci && npm run build
     startCommand: npm run start
