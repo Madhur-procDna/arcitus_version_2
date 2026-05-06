@@ -89,14 +89,18 @@ interface QueryParams {
 
 /**
  * Where to POST /query (JSON body — no query string; avoids URL length limits on previous_sql):
- * - If NEXT_PUBLIC_SERVER_URL is set → browser calls FastAPI **POST /query** (needs CORS).
- *   Use the API **origin only** (e.g. http://127.0.0.1:8000), not .../api — FastAPI has no /api prefix.
- * - Else → same-origin **POST /api/query** (Next proxies to SDA_BACKEND_URL).
- *   This works in both development and production.
+ * - In production → always use same-origin **POST /api/query** so Next.js server proxies to
+ *   SDA_BACKEND_URL and browser CORS/network differences don't break requests.
+ * - In development, if NEXT_PUBLIC_SERVER_URL is set → browser calls FastAPI **POST /query**.
+ *   Use the API origin only (e.g. http://127.0.0.1:8000), not .../api.
+ * - Else in development → same-origin **POST /api/query**.
  */
 function buildQueryUrl(): string {
-  const direct = process.env.NEXT_PUBLIC_SERVER_URL?.trim().replace(/\/$/, '');
+  if (process.env.NODE_ENV === 'production') {
+    return '/api/query';
+  }
 
+  const direct = process.env.NEXT_PUBLIC_SERVER_URL?.trim().replace(/\/$/, '');
   if (direct) {
     const base = direct.replace(/\/api\/?$/, '');
     return new URL('/query', base.endsWith('/') ? base : `${base}/`).toString();
