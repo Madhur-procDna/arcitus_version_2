@@ -1,0 +1,21 @@
+{
+  "project": "Arcutis Analytics",
+  "workbook": "Arcutis Dummy Data v1.xlsx",
+  "product": "ZORYVE",
+  "tables": {
+    "Dummy_Data": {
+      "description": "Flat HCP-level table with monthly TRx (ZORYVE, Other BNST, TCS), quarterly call counts, targeting flags, deciles, and geography for ~39,932 HCPs across Jan 2025 – Mar 2026.",
+      "row_count_approx": 39932,
+      "primary_key": "NPI ID",
+      "key_columns": ["NPI ID", "HCP Name", "Base Territory", "Region", "Area", "Q1'26 Target Flag", "Q4'25 Target Flag"]
+    }
+  },
+  "join_hints": {
+    "notes": [
+      "Single-table dataset — no JOINs required.",
+      "Always double-quote column names with spaces or apostrophes.",
+      "Q1'26 = Jan'26 + Feb'26 + Mar'26; Q4'25 = Oct'25 + Nov'25 + Dec'25.",
+      "ZORYVE Share = ZORYVE / TCS (use NULLIF to avoid div-by-zero)."
+    ]
+  }
+}

@@ -1,0 +1,151 @@
+Counts & lists
+“How many Active vs Retired prescribers are in IQVIA_OneKey?”
+“List all Xponent rows for the latest Month with NPI, Product, Units, and Territory.”
+“What Barrier_Type values appear in Access_Barriers?”
+Joins (plain English)
+“For each prescriber in Xponent in March 2026, show HCP_Name, Specialty, Status, Product, and Units from IQVIA_OneKey.”
+“Match prescriber ZIP in IQVIA_OneKey to Alignment and show Territory and Region.”
+“For HCPs in CRM, show Last_Call_Date and total calls from CRM_Call_History.”
+Territory & performance
+“Which Territory has the highest Call_Count in Activity_Performance_Summary?”
+“Show HCP_Targeting for Territory DAL-11 with Decile and Field_Target_Flag.”
+Changes & data quality
+“What’s in DCR — show Change_Date, Change_Type, and Details.”
+“Any Target_List_Refresh rows where Alignment_Status is not aligned?”
+DDD & shipment
+“Summarize IQVIA_DDD Units by HCO_Name and Product.”
+“Show t_867_Shipment with Shipment_Date, Product, Units, and Distributor.”
+Rules & opt-out
+“Summarize Business_Rules — Policy Name and short Rule Description.”
+“Who is in Marketing_Opt and for which Channel?”
+
+More sensible / logical (coverage, consistency, trends)
+“Which specialties have the highest total Xponent Units in the latest month, top 10?”
+“For territory BOS-03, how many distinct NPIs have Field_Target_Flag set vs not set in HCP_Targeting?”
+“List NPIs that are Active in IQVIA_OneKey but have no Xponent row in the latest month — cap 50.”
+“By Region from Alignment, count distinct territories and sum latest-month Xponent Units where join is possible.”
+“Compare total Units in Xponent vs total Units in IQVIA_DDD for the same product — same recent window if both exist.”
+“Which Barrier_Type in Access_Barriers affects the most distinct NPIs?”
+“From CRM_Call_History, average days between calls per NPI for NPIs with at least 3 calls — top 20 busiest.”
+“Activity_Performance_Summary: territories in the top vs bottom decile by Call_Count — list territory and count.”
+“DCR: count changes by Change_Type in the last 180 days; which type is most common?”
+“Target_List_Refresh: for each Alignment_Status, how many rows and what percent of the table?”
+“t_867_Shipment: top 10 distributor–product combinations by Units in the latest shipment month.”
+“Marketing_Opt: opt-outs by Channel — counts and which channel is largest.”
+“IQVIA_OneKey: prescribers with missing or blank ZIP — how many and why it breaks alignment joins.”
+“Xponent: products with zero units in the latest month but positive units in the prior month — list product.”
+
+Multi-turn (same thread)
+Turn 1: “Count prescribers by Status in IQVIA_OneKey.”
+Turn 2: “Restrict to those who appear in Xponent in the latest month and run the same breakdown.”
+Turn 3: “Which status has the higher median units per prescriber in that month?”
+
+Chart (explicit then follow-up)
+“Pie chart of Barrier_Type counts in Access_Barriers.”
+Then: “Same but only for prescribers marked Active in IQVIA_OneKey.”
+
+Execution follow-up (after a long ask)
+Turn 1: (paste any long join question)
+Turn 2: “do it”
+
+ HCP Merge Resolution
+
+"Dr. Carlos Reyes appears under two HCP IDs — HCP_77812 and HCP_99125 — with a merge record in DCR. Show me his combined prescription volume across both IDs for the most recent 3 months, and confirm which ID should be used as the active record."
+
+2. Stale Target List Impact
+
+"The DCR sheet shows NYC-22 was still running a 2025-Q3 target list as of January 2026. Which prescribers in NYC-22 had increasing prescription volume in Jan-Mar 2026 but may have been missed due to this outdated target list?"
+
+3. Shipment vs. Prescription Reconciliation
+
+"Pacific Infusion Center received two Sunlenca shipments totaling 48 units. Cross-reference this against prescriber-level Sunlenca prescription volumes for SFO-09 territory. Is there a surplus or shortage, and which prescriber accounts for the most demand?"
+
+
+🟠 Prescriber Trend Analysis
+4. Month-over-Month Growth Ranking
+
+"Rank all prescribers by their month-over-month prescription volume growth rate from Jan 2026 to Mar 2026. Who is accelerating vs. plateauing?"
+
+5. Call Type vs. Volume Outcome (rephrased from blocked version)
+
+"In BOS-03 and NYC-22, compare average monthly prescription volume for prescribers who received Clinical Differentiation calls versus those who received Access Reminder calls. Show 2-month volume totals after each call type. Which call category is associated with higher prescribing activity?"
+
+6. Prescriber Continuity Check
+
+"Identify any prescriber who had prescription volume in Oct-Dec 2025 but has zero recorded volume in Jan-Mar 2026. Cross-check their CRM contact status and last call date."
+
+
+🟠 Territory & Regional Intelligence
+7. Territory-Level Product Mix
+
+"Break down prescription volume by product — Biktarvy versus Sunlenca — per territory. Which territory has the highest Sunlenca concentration, and does shipment data from the 867 sheet support or contradict that demand?"
+
+8. Rep Coverage Efficiency
+
+"BOS-03 has 5 prescribers all covered by REP-BOS-1. NYC-22 has 4 prescribers under REP-NYC-2. Compare total prescription volume generated per rep and identify which rep has a higher volume-per-call ratio."
+
+9. DNC Prescriber Volume Assessment
+
+"Dr. Karen Mitchell in BOS-03 has a Do Not Contact restriction recorded in both CRM and DCR. What is her total prescription volume across all available months, and what is the estimated volume impact of not being able to engage her directly?"
+
+
+🟡 Institutional Level Analysis
+10. Institution Prescription Concentration
+
+"Harlem HIV Care Center has two active prescribers. What percentage of NYC-22 territory total prescription volume does this single institution represent across all available months?"
+
+11. DDD vs. Prescriber Data Reconciliation
+
+"The DDD sheet shows Harlem HIV Care Center dispensed 81 Biktarvy units across Q4 2025 and Q1 2026. Compare this against prescriber-level data for the same institution and same period. Do these two numbers align? If not, what is the gap and what could explain it?"
+
+12. Specialty Mix vs. Prescribing Share
+
+"Infectious Disease and HIV Medicine specialists are prescribing Biktarvy. Internal Medicine specialists appear as referring physicians. What share of total prescription volume comes from each specialty, and are Internal Medicine prescribers underpenetrated relative to their population in the data?"
+
+
+🔵 Advanced Multi-Condition Logic
+13. Eligible but Never Contacted Prescribers
+
+"From the OneKey sheet, identify all Active and Creditable prescribers who do not appear anywhere in the CRM call history data. These represent prescribers who are eligible for engagement but have never been contacted. List them by territory."
+
+14. Retail vs. Non-Retail Prescriber Volume
+
+"The OneKey sheet has a Retail indicator marked Y or N. Among prescribers with prescription data, compare average monthly volume for those marked Retail Y versus Retail N. Is there a meaningful volume difference between the two groups?"
+
+15. Rolling Average vs. Most Recent Month
+
+"For each prescriber with at least 4 months of prescription data, calculate their rolling 3-month average volume and compare it against their most recent month. Organize results by territory and sort by highest deviation from their own rolling average."
+
+
+List the 30 as plain lines only (no easy/medium/hard labels).
+
+How many distinct HCP_ID values appear in IQVIA_OneKey where Territory is BOS-03?
+For March 2026, sum Units from Xponent where Product name contains Biktarvy.
+List HCP_Name and NPI for every row in IQVIA_OneKey where Specialty is Infectious Disease and Status is Active.
+Count CRM_Call_History rows in Q1 2026 by Channel.
+Which ZIP codes in Alignment map to territory NYC-22?
+For HCP_66219, show DNC_Flag, Digital_DNC_Flag, and Inperson_DNC_Flag from IQVIA_OneKey if those columns exist.
+After 2026-02-28, how many CRM calls for HCP_66219 are Virtual versus In-Person, and what are the call dates?
+Pull the latest DCR log lines where the text mentions email or unsubscribe for any HCP.
+For Access_Barriers rows tied to Olivia Chen, show Barrier_Type, Barrier_Status, Effective_Date, and Notes.
+Compare average Engagement_Score in Q4 2025 versus Q1 2026 from Activity_Performance_Summary for the same HCP_ID as Olivia Chen.
+For Q1 2026 calls to Olivia Chen, count rows by Message_Theme and list the share of calls that are Reminder or Access Reminder.
+Month by month for the last six months, list Xponent Units for Olivia Chen for Biktarvy.
+List HCO_ID and account name where DDD has Biktarvy units in Q1 2026 but you see no Xponent prescriber rows for affiliated Active prescribers with Retail N.
+For institution HCO_4421, sum DDD units by quarter and list any 867 shipment rows for that account in 2026.
+For ZIP 10027, what territory does Alignment return?
+For merge where survivor is HCP_99125, show DCR request type, dates, and free-text reason fields.
+For NPI 1847203944, list all distinct HCP_ID values that appear on Xponent in the last six months and the latest Month per HCP_ID.
+For HCP_77812 and HCP_99125, compare IC_Credit and Creditable on IQVIA_OneKey and note Status if present.
+For survivor HCP_99125 after 2026-02-15, list Xponent Month and Units through the latest month available in the file.
+For DAL-19, list DDD outlet rows in the last 90 days window if that column exists, with units and product.
+For HCO_55711, list 867 shipment dates, units, and distributor fields for Sunlenca if present.
+For ZIP 94103, confirm territory from Alignment and list any 867 rows for outlets in that ZIP.
+Count IQVIA_DDD rows for Sunlenca in February 2026 by territory if the table has territory.
+For prescribers HCP_44571 and HCP_44572, count CRM calls ever and sum February 2026 Xponent Units for Sunlenca.
+Which Internal Medicine prescribers have IC_Credit Full and Creditable Yes in IQVIA_OneKey for territory BOS-03?
+For every HCP in BOS-03 with IC_Credit Full, list Specialty and flag whether Specialty text contains Internal Medicine or Family Medicine.
+For each territory, count distinct ZIP codes in Alignment and separately count HCP rows where OneKey ZIP joined to Alignment territory differs from the territory on the Xponent row for the same HCP_ID, if both exist.
+For reps in a small list you derive from CRM calls, count post–opt-out Virtual calls joined to Marketing_Opt on HCP_ID with call date after opt-out date.
+Build a per-HCP summary: total calls in Q1 2026, count where Message_Theme is Reminder or Access Reminder, and cast count as real divided by total for share.
+For Active HCPs in the workbook, produce one row per HCP_ID with columns for OneKey Status, IC_Credit, Creditable, latest Xponent Units, and a CASE label Valid versus Review versus Invalid using only those fields and DCR merge survivor fields if present.
