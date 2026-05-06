@@ -5,7 +5,7 @@ services:
     plan: free
     rootDir: Backend/src
     buildCommand: pip install -r ../requirements.txt
-    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT --workers 2
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
