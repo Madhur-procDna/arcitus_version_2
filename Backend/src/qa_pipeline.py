@@ -1038,7 +1038,7 @@ def run_question_pipeline_turn(
         return {
             "question": q,
             "sql": None,
-            "answer": "Hi, I am your Arcitus data query assistant, how can I help you?",
+            "answer": "Hi, I am your Arcutis data query assistant, how can I help you?",
             "row_count": 0,
             "cache_hit": False,
             "sql_agent_llm_rounds": 0,

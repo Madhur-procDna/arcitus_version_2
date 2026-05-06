@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: gilead-backend
+    name: arcutis-backend
     runtime: python
     plan: free
     rootDir: Backend/src
@@ -42,7 +42,7 @@ services:
         value: public
 
   - type: web
-    name: gilead-frontend
+    name: arcutis-frontend
     runtime: node
     plan: free
     rootDir: Frontendd
