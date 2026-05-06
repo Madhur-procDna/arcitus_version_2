@@ -22,11 +22,27 @@ services:
         value: 2025-01-01-preview
       - key: AZURE_OPENAI_KEY
         sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
       - key: AZURE_OPENAI_ENDPOINT
         sync: false
       - key: AZURE_OPENAI_CHAT_DEPLOYMENT
         sync: false
       - key: AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT
+        sync: false
+      - key: azure_openai_key
+        sync: false
+      - key: azure_openai_endpoint
+        sync: false
+      - key: chat_deployment
+        sync: false
+      - key: embeddings_deployment
+        sync: false
+      - key: api_version
+        value: 2025-01-01-preview
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_ADMIN_KEY
         sync: false
       - key: PGHOST
         sync: false
@@ -52,4 +68,6 @@ services:
       - key: NODE_VERSION
         value: 20.19.0
       - key: SDA_BACKEND_URL
+        sync: false
+      - key: NEXT_PUBLIC_SERVER_URL
         sync: false
