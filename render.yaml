@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: gilead-backend
+    runtime: python
+    plan: starter
+    rootDir: Backend/src
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SDA_DATA_SOURCE
+        value: postgres
+      - key: QUERY_ROW_LIMIT
+        value: "500"
+      - key: POSTGRES_MAX_ROWS
+        value: "500"
+      - key: REDIS_ENABLED
+        value: "false"
+      - key: AZURE_OPENAI_API_VERSION
+        value: 2025-01-01-preview
+      - key: AZURE_OPENAI_KEY
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_CHAT_DEPLOYMENT
+        sync: false
+      - key: AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT
+        sync: false
+      - key: PGHOST
+        sync: false
+      - key: PGPORT
+        value: "5432"
+      - key: PGDATABASE
+        sync: false
+      - key: PGUSER
+        sync: false
+      - key: PGPASSWORD
+        sync: false
+      - key: PGSCHEMA
+        value: public
+
+  - type: web
+    name: gilead-frontend
+    runtime: node
+    plan: starter
+    rootDir: Frontendd
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: SDA_BACKEND_URL
+        sync: false
