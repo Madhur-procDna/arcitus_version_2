@@ -261,7 +261,7 @@ export const queryChat = async ({
     const sub_results: SubQueryResult[] | undefined =
       Array.isArray(rawSubs) && rawSubs.length > 0
         ? rawSubs.map((sr) => {
-            const o = sr as Record<string, unknown>;
+            const o = sr as unknown as Record<string, unknown>;
             return {
               index: typeof o.index === 'number' ? o.index : Number(o.index) || 0,
               question: typeof o.question === 'string' ? o.question : '',
