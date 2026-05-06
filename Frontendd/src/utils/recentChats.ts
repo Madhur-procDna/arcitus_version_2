@@ -242,8 +242,8 @@ function writeRecords(records: RecentChatRecord[]): void {
 }
 
 function deriveTitle(messages: RecentChatMessage[]): string {
-  const firstUser = messages.find((m) => m.role === 'user');
-  const raw = firstUser?.content?.trim() || 'New chat';
+  const latestUser = [...messages].reverse().find((m) => m.role === 'user');
+  const raw = latestUser?.content?.trim() || 'New chat';
   const singleLine = raw.replace(/\s+/g, ' ');
   return singleLine.length > MAX_TITLE_LEN ? `${singleLine.slice(0, MAX_TITLE_LEN - 1)}…` : singleLine;
 }

@@ -31,7 +31,7 @@ const LandingPage = () => {
     }
 
     const userQuestion = inputValue.trim();
-    const chatId = `chat-${Date.now()}`;
+    const chatId = `arcutis-${Date.now()}`;
     sessionStorage.setItem('pendingQuestion', userQuestion);
     sessionStorage.setItem('pendingChatId', chatId);
 
