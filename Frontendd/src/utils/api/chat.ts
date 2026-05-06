@@ -161,15 +161,31 @@ function parseResultTablePayload(rt: unknown): ResultTablePayload | undefined {
 }
 
 function formatHttpError(status: number, bodyText: string): string {
-  try {
-    const j = JSON.parse(bodyText) as { detail?: unknown };
-    if (j.detail != null) {
-      return typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-    }
-  } catch {
-    /* not JSON */
+  const raw = bodyText.trim();
+  const lower = raw.toLowerCase();
+  if (
+    status === 503 &&
+    (lower.includes('service suspended') ||
+      lower.includes('has been suspended by its owner') ||
+      lower.includes('<title>service suspended</title>'))
+  ) {
+    return [
+      'Backend service is currently suspended on Render.',
+      'Open gilead-backend in Render and click Resume/Unsuspend, then redeploy once.',
+      'Verify: https://gilead-backend.onrender.com/health returns JSON before retrying chat.',
+    ].join(' ');
   }
-  return bodyText.trim() || `HTTP ${status}`;
+  try {
+    const j = JSON.parse(raw) as { detail?: unknown; error?: unknown; response?: unknown };
+    if (j.detail != null) return typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+    if (j.error != null) return typeof j.error === 'string' ? j.error : JSON.stringify(j.error);
+    if (j.response != null) return typeof j.response === 'string' ? j.response : JSON.stringify(j.response);
+  } catch {
+    if (raw.startsWith('<!DOCTYPE html') || raw.startsWith('<html')) {
+      return `HTTP ${status}: upstream HTML error page returned by backend. Check backend logs and /health.`;
+    }
+  }
+  return raw || `HTTP ${status}`;
 }
 
 export const queryChat = async ({

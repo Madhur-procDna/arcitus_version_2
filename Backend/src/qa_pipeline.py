@@ -228,6 +228,11 @@ _MONTH_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _QUARTER_KEY_RE = re.compile(r"^q([1-4])[ _-]?'?(\d{2,4})$", re.IGNORECASE)
+_YEAR_LABEL_RE = re.compile(r"^(19|20)\d{2}$")
+_TIME_LABEL_TOKEN_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|q[1-4]|fy\d{2,4}|wk\d{1,2}|week|month|quarter|year)\b",
+    re.IGNORECASE,
+)
 _MONTH_INDEX = {
     "jan": 1,
     "feb": 2,
@@ -248,6 +253,27 @@ _MONTH_INDEX = {
 def _norm_year(year_token: str) -> int:
     y = int(year_token)
     return 2000 + y if y < 100 else y
+
+
+def _looks_like_time_label(label: str) -> bool:
+    s = (label or "").strip().lower().replace("-", " ").replace("_", " ")
+    if not s:
+        return False
+    if _YEAR_LABEL_RE.match(s):
+        return True
+    if _MONTH_KEY_RE.match(s.replace(" ", "_")):
+        return True
+    if _QUARTER_KEY_RE.match(s.replace(" ", "_")):
+        return True
+    return bool(_TIME_LABEL_TOKEN_RE.search(s))
+
+
+def _is_probably_time_series_data(data: list[dict]) -> bool:
+    if len(data) < 3:
+        return False
+    names = [str(d.get("name", "")).strip() for d in data]
+    temporal_hits = sum(1 for n in names if _looks_like_time_label(n))
+    return temporal_hits >= max(2, int(0.6 * len(names)))
 
 
 def _format_pct(delta: float, base: float) -> str:
@@ -445,6 +471,11 @@ def _suggest_chart(question: str, rows: list[dict]) -> dict | None:
         data.append({"name": name or "(blank)", "value": val})
     if len(data) < 2:
         return None
+
+    # Temporal labels should render as line charts even when the text also mentions
+    # ranking/growth/compare terms.
+    if _is_probably_time_series_data(data):
+        return {"kind": "line", "data": data}
 
     # Ranking / territory / growth comparisons → bar chart (before generic trend)
     if _CONTRIB_RE.search(q) and len(data) <= 12:
@@ -823,7 +854,7 @@ def _enforce_region_scope(question: str, answer: str) -> str:
 
 def _cache_key(question: str) -> str:
     # Versioned to invalidate stale cached answers after output/cleaning logic updates.
-    return "v4|" + " ".join((question or "").strip().lower().split())
+    return "v5|" + " ".join((question or "").strip().lower().split())
 
 
 def _cache_schema_name() -> str:
