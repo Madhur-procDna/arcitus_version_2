@@ -823,32 +823,34 @@ def _enforce_region_scope(question: str, answer: str) -> str:
     If user asks about East only (without asking East vs West), avoid West comparison wording.
     """
     q = question or ""
-    if not _EAST_ONLY_Q_RE.search(q) or _WEST_Q_RE.search(q):
-        return answer
     out = answer or ""
-    # Remove explicit East-vs-West comparison phrasing.
-    out = re.sub(r"\bvs\.?\s*west\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bversus\s*west\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bthan\s+the\s+west\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bthan\s+west\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bcompared\s+to\s+the\s+west\b", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"\bcompared\s+to\s+west\b", "", out, flags=re.IGNORECASE)
-    # Drop any West-referencing lines (bullets or prose) in East-only requests.
+    east_only = _is_east_only_question(q)
+    west_only = _is_west_only_question(q)
+    if not east_only and not west_only:
+        return out
+    banned = "west" if east_only else "east"
+    # Remove explicit cross-region comparison phrasing.
+    out = re.sub(rf"\bvs\.?\s*{banned}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\bversus\s*{banned}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\bthan\s+the\s+{banned}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\bthan\s+{banned}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\bcompared\s+to\s+the\s+{banned}\b", "", out, flags=re.IGNORECASE)
+    out = re.sub(rf"\bcompared\s+to\s+{banned}\b", "", out, flags=re.IGNORECASE)
+    # Drop any opposite-region lines in single-region requests.
     lines = out.splitlines()
     kept: list[str] = []
     for ln in lines:
-        if re.search(r"\bwest\b", ln, flags=re.IGNORECASE):
+        if re.search(rf"\b{banned}\b", ln, flags=re.IGNORECASE):
             continue
         kept.append(ln)
     out = "\n".join(kept)
-    # Add explicit scope note so intent is clear.
-    if "Summary" in out and "East-only scope" not in out:
-        out = re.sub(
-            r"(?im)^(\*\*Summary\*\*|\bSummary\b)\s*$",
-            r"\1\n- East-only scope: this explanation focuses on East performance drivers without cross-region comparison.",
-            out,
-            count=1,
-        )
+    scope_text = (
+        "East-only scope: this explanation focuses on East performance drivers without cross-region comparison."
+        if east_only
+        else "West-only scope: this explanation focuses on West performance drivers without cross-region comparison."
+    )
+    if "Summary" in out and scope_text not in out:
+        out = re.sub(r"(?im)^(\*\*Summary\*\*|\bSummary\b)\s*$", rf"\1\n- {scope_text}", out, count=1)
     return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
@@ -857,21 +859,26 @@ def _is_east_only_question(question: str) -> bool:
     return bool(_EAST_ONLY_Q_RE.search(q) and not _WEST_Q_RE.search(q))
 
 
-def _filter_rows_for_east_scope(rows: list[dict]) -> list[dict]:
-    """For East-only asks, remove rows that explicitly mention West in any value."""
+def _is_west_only_question(question: str) -> bool:
+    q = question or ""
+    return bool(_WEST_Q_RE.search(q) and not _EAST_ONLY_Q_RE.search(q))
+
+
+def _filter_rows_excluding_region_term(rows: list[dict], banned_term: str) -> list[dict]:
+    """Remove rows that explicitly mention a banned region term in any value."""
     if not rows:
         return rows
     kept: list[dict] = []
     for r in rows:
         vals = " ".join(str(v) for v in r.values() if v is not None)
-        if re.search(r"\bwest\b", vals, flags=re.IGNORECASE):
+        if re.search(rf"\b{re.escape(banned_term)}\b", vals, flags=re.IGNORECASE):
             continue
         kept.append(r)
     return kept if kept else rows
 
 
-def _filter_chart_for_east_scope(chart: dict | None) -> dict | None:
-    """For East-only asks, drop chart rows/slices with West labels."""
+def _filter_chart_excluding_region_term(chart: dict | None, banned_term: str) -> dict | None:
+    """Drop chart rows/slices with banned region labels."""
     if not chart or not isinstance(chart, dict):
         return chart
     data = chart.get("data")
@@ -882,7 +889,7 @@ def _filter_chart_for_east_scope(chart: dict | None) -> dict | None:
         if not isinstance(d, dict):
             continue
         label_blob = " ".join(str(v) for v in d.values() if isinstance(v, (str, int, float)))
-        if re.search(r"\bwest\b", label_blob, flags=re.IGNORECASE):
+        if re.search(rf"\b{re.escape(banned_term)}\b", label_blob, flags=re.IGNORECASE):
             continue
         filtered.append(d)
     if len(filtered) >= 1:
@@ -892,9 +899,37 @@ def _filter_chart_for_east_scope(chart: dict | None) -> dict | None:
     return chart
 
 
+def _enforce_compare_claims_against_rows(question: str, answer: str, rows: list[dict]) -> str:
+    """
+    For compare asks, remove unsupported cross-region claims if one side is absent in rows.
+    Keeps output format; only drops ungrounded lines and adds a data-backed note.
+    """
+    if not _COMPARE_RE.search(question or "") or not answer:
+        return answer
+    row_blob = " ".join(" ".join(str(v) for v in r.values() if v is not None) for r in rows)
+    has_east = bool(re.search(r"\beast\b", row_blob, flags=re.IGNORECASE))
+    has_west = bool(re.search(r"\bwest\b", row_blob, flags=re.IGNORECASE))
+    if has_east and has_west:
+        return answer
+    out = answer
+    if not has_west:
+        out = re.sub(r"(?im)^.*\bwest\b.*\n?", "", out)
+        note = "- Data note: this compare output currently contains only East rows from the executed query result."
+    elif not has_east:
+        out = re.sub(r"(?im)^.*\beast\b.*\n?", "", out)
+        note = "- Data note: this compare output currently contains only West rows from the executed query result."
+    else:
+        return answer
+    if "Supporting Observations" in out and note not in out:
+        out = re.sub(r"(?im)^(\*\*Supporting Observations\*\*|\bSupporting Observations\b)\s*$", rf"\1\n{note}", out, count=1)
+    elif note not in out:
+        out = out.rstrip() + f"\n\n**Supporting Observations**\n{note}"
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
+
+
 def _cache_key(question: str) -> str:
     # Versioned to invalidate stale cached answers after output/cleaning logic updates.
-    return "v6|" + " ".join((question or "").strip().lower().split())
+    return "v7|" + " ".join((question or "").strip().lower().split())
 
 
 def _cache_schema_name() -> str:
@@ -968,7 +1003,9 @@ def _run_single_question(
     sql_out = (resp.sql or "").strip() or "(sql-agent)"
     rows = _drop_unfilled_entity_rows(resp.results or [])
     if _is_east_only_question(q):
-        rows = _filter_rows_for_east_scope(rows)
+        rows = _filter_rows_excluding_region_term(rows, "west")
+    elif _is_west_only_question(q):
+        rows = _filter_rows_excluding_region_term(rows, "east")
     answer = sanitize_user_visible_text(strip_sql_from_nl_chat_markup(resp.content or "")) or ""
     answer = _remove_sql_logic_from_answer(answer)
     answer = _remove_markdown_tables(answer)
@@ -977,6 +1014,7 @@ def _run_single_question(
     answer = _inflate_answer_bullet_lists(answer)
     answer = _enforce_relationship_analysis_rules(q, answer, rows)
     answer = _enforce_region_scope(q, answer)
+    answer = _enforce_compare_claims_against_rows(q, answer, rows)
     deterministic_trend = _build_trend_math_answer(q, rows)
     if deterministic_trend:
         answer = deterministic_trend
@@ -1015,7 +1053,9 @@ def _run_single_question(
     if not err and rows:
         chart = _suggest_chart(q, rows)
         if _is_east_only_question(q):
-            chart = _filter_chart_for_east_scope(chart)
+            chart = _filter_chart_excluding_region_term(chart, "west")
+        elif _is_west_only_question(q):
+            chart = _filter_chart_excluding_region_term(chart, "east")
         if chart:
             out["chart"] = chart
         elif _RELATIONSHIP_RE.search(q):
