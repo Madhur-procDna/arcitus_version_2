@@ -9,34 +9,55 @@ Main export: append_row_count_note
 
 from __future__ import annotations
 
+from datetime import datetime
+
 _CSV_THRESHOLD = 10  # show download note only when rows exceed this
+
+
+def format_month_label(date_str: object) -> str:
+    """Format ISO/month-like values as `Jan '25` for trend chart X-axis labels."""
+    text = str(date_str or "").strip()
+    if not text:
+        return ""
+    for fmt, candidate in (
+        ("%Y-%m-%d", text[:10]),
+        ("%Y-%m", text[:7]),
+        ("%b %Y", text),
+        ("%B %Y", text),
+    ):
+        try:
+            return datetime.strptime(candidate, fmt).strftime("%b '%y")
+        except ValueError:
+            pass
+    return text
+
+
+def normalize_chart_month_labels(chart: dict | None) -> dict | None:
+    """Normalize chart payload month labels before API serialization."""
+    if not isinstance(chart, dict) or not isinstance(chart.get("data"), list):
+        return chart
+    data = []
+    for row in chart["data"]:
+        if not isinstance(row, dict):
+            data.append(row)
+            continue
+        nxt = dict(row)
+        if "name" in nxt:
+            nxt["name"] = format_month_label(nxt["name"])
+        elif "month" in nxt:
+            nxt["month"] = format_month_label(nxt["month"])
+        data.append(nxt)
+    out = dict(chart)
+    out["data"] = data
+    return out
 
 
 def append_row_count_note(answer: str, *, total: int) -> str:
     """
-    Append a row-count summary line before 'Sources checked:'.
-
-    When total > _CSV_THRESHOLD:
-      "Total rows: 247 — showing top 10.  [Download full dataset (247 rows) as CSV]"
-    Otherwise:
-      "Total rows: 3"
+    Row-count note disabled — CSV download button provides data access.
+    Function kept for API compatibility; returns answer unchanged.
     """
-    if total <= 0:
-        return answer
-
-    if total > _CSV_THRESHOLD:
-        note = (
-            f"**Total rows:** {total} — showing top 10.  "
-            f"[Download full dataset ({total} rows) as CSV]"
-        )
-    else:
-        note = f"**Total rows:** {total}"
-
-    sep = "Sources checked:"
-    if sep in answer:
-        head, tail = answer.split(sep, 1)
-        return f"{head.rstrip()}\n\n{note}\n\n{sep}{tail}"
-    return f"{answer.rstrip()}\n\n{note}"
+    return answer
 
 
 # ── kept for internal use / tests ─────────────────────────────────────────────

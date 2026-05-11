@@ -14,7 +14,11 @@ _FORBIDDEN: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bUPDATE\b",       re.IGNORECASE), "UPDATE statements are not permitted."),
     (re.compile(r"\bALTER\b",        re.IGNORECASE), "ALTER statements are not permitted."),
     (re.compile(r"\bCREATE\b",       re.IGNORECASE), "CREATE statements are not permitted."),
+    (re.compile(r"\bREPLACE\b",      re.IGNORECASE), "REPLACE statements are not permitted."),
     (re.compile(r"\bEXEC(?:UTE)?\b", re.IGNORECASE), "EXEC/EXECUTE is not permitted."),
+    (re.compile(r"\bSHOW\s+TABLES\b", re.IGNORECASE), "Schema-probing queries are not permitted."),
+    (re.compile(r"\bDESCRIBE\b", re.IGNORECASE), "Schema-probing queries are not permitted."),
+    (re.compile(r"\bINFORMATION_SCHEMA\b|\bPG_CATALOG\b|\bSYS\.TABLES\b|\bPRAGMA\b", re.IGNORECASE), "Schema-probing queries are not permitted."),
     (re.compile(r"--"),                               "SQL comments (--) are not permitted."),
     (re.compile(r";\s*\S", re.DOTALL),                "Multiple statements are not permitted."),
 ]
@@ -114,13 +118,9 @@ def validate_sql(
                     f'wrap it in double-quotes in your query.'
                 )
 
-    # 4. No LIMIT clause
-    if not re.search(r"\bLIMIT\b", trimmed, re.IGNORECASE):
-        warnings.append(
-            "No LIMIT clause detected — query may return a large result set."
-        )
 
-    # 5. SELECT *
+
+    # 6. SELECT *
     if re.search(r"SELECT\s+\*", trimmed, re.IGNORECASE):
         warnings.append(
             "SELECT * returns all columns. "

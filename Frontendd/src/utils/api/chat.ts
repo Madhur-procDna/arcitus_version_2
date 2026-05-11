@@ -18,6 +18,17 @@ export interface SubQueryResult {
 interface QueryResponse {
   success: boolean;
   response: string;
+  answer_text?: string;
+  data_table?: Record<string, unknown>[] | null;
+  chart_recommendation?: {
+    show_chart: boolean;
+    chart_type: 'bar' | 'line' | 'pie' | 'scatter' | 'none';
+    x_axis: string;
+    y_axis: string;
+    title: string;
+    rationale: string;
+  };
+  clarification_needed?: string | null;
   error?: string;
   /** Wall-clock ms for the Python pipeline (FastAPI); also sent as X-Process-Time-Ms */
   duration_ms?: number;
@@ -36,6 +47,10 @@ interface QueryResponse {
 export interface QueryChatResult {
   ok: boolean;
   response: string;
+  answer_text?: string;
+  data_table?: Record<string, unknown>[] | null;
+  chart_recommendation?: QueryResponse['chart_recommendation'];
+  clarification_needed?: string | null;
   duration_ms?: number;
   cache_hit?: boolean;
   row_count?: number;
@@ -85,6 +100,8 @@ interface QueryParams {
   previousSql?: string;
   /** Recent Q→A pairs so the API can seed context when its buffer is empty (multi-turn / multi-worker). */
   priorTurns?: PriorTurn[];
+  /** When true, bypasses both local and Redis cache — always runs a fresh LLM call. */
+  forceRefresh?: boolean;
 }
 
 /**
@@ -115,19 +132,26 @@ function parseChartPayload(
     chart &&
     typeof chart === 'object' &&
     (chart as { kind?: string }).kind &&
-    ['bar', 'pie', 'line', 'stacked_bar'].includes(String((chart as { kind: string }).kind)) &&
+    ['bar', 'pie', 'line', 'scatter'].includes(String((chart as { kind: string }).kind)) &&
     Array.isArray((chart as { data?: unknown }).data)
   ) {
-    const c = chart as ChartPayload & { lineSeriesKeys?: string[]; stackSeriesKeys?: string[] };
+    const c = chart as ChartPayload & {
+      lineSeriesKeys?: string[];
+      title?: string;
+      description?: string;
+      showGrowthLines?: boolean;
+    };
     return {
       kind: c.kind,
       data: c.data as Record<string, unknown>[],
       ...(Array.isArray(c.lineSeriesKeys) && c.lineSeriesKeys.length > 0
         ? { lineSeriesKeys: c.lineSeriesKeys }
         : {}),
-      ...(Array.isArray(c.stackSeriesKeys) && c.stackSeriesKeys.length > 0
-        ? { stackSeriesKeys: c.stackSeriesKeys }
+      ...(typeof c.title === 'string' && c.title.trim() ? { title: c.title.trim() } : {}),
+      ...(typeof c.description === 'string' && c.description.trim()
+        ? { description: c.description.trim() }
         : {}),
+      ...(c.showGrowthLines === true ? { showGrowthLines: true } : {}),
     };
   }
   return undefined;
@@ -160,32 +184,43 @@ function parseResultTablePayload(rt: unknown): ResultTablePayload | undefined {
   return undefined;
 }
 
-function formatHttpError(status: number, bodyText: string): string {
-  const raw = bodyText.trim();
-  const lower = raw.toLowerCase();
-  if (
-    status === 503 &&
-    (lower.includes('service suspended') ||
-      lower.includes('has been suspended by its owner') ||
-      lower.includes('<title>service suspended</title>'))
-  ) {
-    return [
-      'Backend service is currently suspended on Render.',
-      'Open gilead-backend in Render and click Resume/Unsuspend, then redeploy once.',
-      'Verify: https://gilead-backend.onrender.com/health returns JSON before retrying chat.',
-    ].join(' ');
-  }
-  try {
-    const j = JSON.parse(raw) as { detail?: unknown; error?: unknown; response?: unknown };
-    if (j.detail != null) return typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-    if (j.error != null) return typeof j.error === 'string' ? j.error : JSON.stringify(j.error);
-    if (j.response != null) return typeof j.response === 'string' ? j.response : JSON.stringify(j.response);
-  } catch {
-    if (raw.startsWith('<!DOCTYPE html') || raw.startsWith('<html')) {
-      return `HTTP ${status}: upstream HTML error page returned by backend. Check backend logs and /health.`;
-    }
-  }
-  return raw || `HTTP ${status}`;
+/** Mirrors ``Backend/src/arcutis_public_replies.py`` — keep wording in sync. */
+export const PHARMA_ASSISTANT_PUBLIC_REPLY =
+  "I'm the Arcutis Data Assistant. I can only help with Arcutis and pharmaceutical-related " +
+  "queries — things like HCP data, prescribing trends, territory performance, ZORYVE TRx, " +
+  "payer mix, and market insights. Could you share what you'd like to explore?";
+
+export const OFFTOPIC_DENY_REPLY =
+  "That topic is outside my scope. I'm the Arcutis Data Assistant, focused exclusively on " +
+  "Arcutis products, HCP analytics, prescribing data, and pharmaceutical competitor insights. " +
+  "I'm not able to help with that request.";
+
+export const GIBBERISH_REPLY =
+  "I'm the Arcutis Data Assistant. I can only help with Arcutis and pharmaceutical-related queries.";
+
+export const PHARMA_ASSISTANT_FALLBACK_REPLY =
+  "I'm the Arcutis Data Assistant. I can only help with Arcutis and pharmaceutical-related queries.";
+
+export const PHARMA_TIMEOUT_REPLY =
+  "That's taking longer than expected — the database or AI pipeline may be under load. " +
+  "Please try again in a moment. If the issue continues, try rephrasing your question or " +
+  "narrowing the scope (e.g. a specific region or time period).";
+
+export const PHARMA_PARSE_ERROR_REPLY =
+  "I wasn't able to read the response correctly. Could you try rephrasing your question? " +
+  "I'm here to help with HCP data, ZORYVE TRx, territory performance, and related insights.";
+
+const CANNED_FAILURE_REPLIES: readonly string[] = [
+  PHARMA_ASSISTANT_PUBLIC_REPLY,
+  OFFTOPIC_DENY_REPLY,
+  GIBBERISH_REPLY,
+];
+
+/** When a multipart sub-query returns an error string, map known canned replies only. */
+export function publicReplyForSubQueryError(error: string | undefined): string {
+  const t = (error || '').trim();
+  if (CANNED_FAILURE_REPLIES.includes(t)) return t;
+  return PHARMA_ASSISTANT_PUBLIC_REPLY;
 }
 
 export const queryChat = async ({
@@ -194,6 +229,7 @@ export const queryChat = async ({
   previousQuestion,
   previousSql,
   priorTurns,
+  forceRefresh = false,
 }: QueryParams): Promise<QueryChatResult> => {
   const url = buildQueryUrl();
   const body = JSON.stringify({
@@ -203,6 +239,7 @@ export const queryChat = async ({
       ? { previous_question: previousQuestion.trim(), previous_sql: previousSql.trim() }
       : {}),
     ...(priorTurns && priorTurns.length > 0 ? { prior_turns: priorTurns } : {}),
+    ...(forceRefresh ? { force_refresh: true } : {}),
   });
 
   /** NL→SQL pipelines can exceed 60s; match proxy default (10 min unless overridden). */
@@ -212,9 +249,8 @@ export const queryChat = async ({
     Number.isFinite(_ft) && _ft > 0 ? _ft : 600_000,
   );
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  const doFetch = () =>
+    fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -222,47 +258,38 @@ export const queryChat = async ({
       body,
       signal: AbortSignal.timeout(fetchTimeoutMs),
     });
+
+  let response: Response;
+  try {
+    response = await doFetch();
+    // Render free instances can briefly return gateway errors right after wake-up.
+    // Retry once to smooth transient 502/503 without user-visible failure.
+    if (response.status === 502 || response.status === 503) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      response = await doFetch();
+    }
   } catch (e) {
     const aborted =
       e instanceof Error &&
       (e.name === 'AbortError' ||
         (typeof DOMException !== 'undefined' && e instanceof DOMException && e.name === 'AbortError'));
     if (aborted) {
-      return {
-        ok: false,
-        response: `Request timed out after ${fetchTimeoutMs / 1000}s. The NL→SQL pipeline or database may need more time — increase NEXT_PUBLIC_QUERY_FETCH_TIMEOUT_MS and SDA_QUERY_PROXY_TIMEOUT_MS, and set POSTGRES_STATEMENT_TIMEOUT_MS / AZURE_OPENAI_HTTP_TIMEOUT_SEC on the backend.`,
-      };
+      return { ok: false, response: PHARMA_TIMEOUT_REPLY };
     }
-    const hint =
-      process.env.NEXT_PUBLIC_SERVER_URL?.trim()
-        ? `Cannot reach ${process.env.NEXT_PUBLIC_SERVER_URL}`
-        : 'Cannot reach Next.js API route. Is `npm run dev` running?';
-    const msg =
-      e instanceof TypeError
-        ? `${hint}. Start the Python API on the port in Frontendd/.env.local (SDA_BACKEND_URL), e.g. Backend\\\\run_api.ps1 or uvicorn on 8000/8001.`
-        : String(e);
-    return { ok: false, response: msg };
+    return { ok: false, response: PHARMA_ASSISTANT_FALLBACK_REPLY };
   }
 
   const bodyText = await response.text();
 
   if (!response.ok) {
-    const detail = formatHttpError(response.status, bodyText);
-    if (response.status === 404) {
-      const hint404 =
-        process.env.NEXT_PUBLIC_SERVER_URL?.trim()
-          ? ' Check NEXT_PUBLIC_SERVER_URL is the FastAPI origin only (e.g. http://127.0.0.1:8000), not .../api. Or remove it to use the /api/query proxy in dev.'
-          : ' In dev, the route should be POST /api/query — if you see 404, restart `npm run dev` after adding src/app/api/query/route.ts.';
-      return { ok: false, response: `API 404: ${detail}.${hint404}` };
-    }
-    return { ok: false, response: `API ${response.status}: ${detail}` };
+    return { ok: false, response: PHARMA_ASSISTANT_FALLBACK_REPLY };
   }
 
   let data: QueryResponse;
   try {
     data = JSON.parse(bodyText) as QueryResponse;
   } catch {
-    return { ok: false, response: `Invalid JSON from API: ${bodyText.slice(0, 200)}` };
+    return { ok: false, response: PHARMA_PARSE_ERROR_REPLY };
   }
 
   if (typeof data.duration_ms === 'number' && process.env.NODE_ENV === 'development') {
@@ -291,7 +318,11 @@ export const queryChat = async ({
         : undefined;
     return {
       ok: true,
-      response: data.response,
+      response: data.answer_text || data.response,
+      answer_text: data.answer_text || data.response,
+      data_table: Array.isArray(data.data_table) ? data.data_table : null,
+      chart_recommendation: data.chart_recommendation,
+      clarification_needed: typeof data.clarification_needed === 'string' ? data.clarification_needed : null,
       duration_ms: data.duration_ms,
       cache_hit: Boolean(data.cache_hit),
       row_count: typeof data.row_count === 'number' ? data.row_count : undefined,
@@ -304,7 +335,15 @@ export const queryChat = async ({
   }
   return {
     ok: false,
-    response: data.error || data.response || 'Unknown error from API',
+    // Prefer clarification from backend when present (api_server.py sets this on some paths)
+    response:
+      typeof data.clarification_needed === 'string' && data.clarification_needed.trim()
+        ? data.clarification_needed.trim()
+        : typeof data.response === 'string' && data.response.trim()
+          ? data.response.trim()
+          : PHARMA_ASSISTANT_FALLBACK_REPLY,
+    clarification_needed:
+      typeof data.clarification_needed === 'string' ? data.clarification_needed : null,
     duration_ms: data.duration_ms,
     sql: typeof data.sql === 'string' ? data.sql : undefined,
   };

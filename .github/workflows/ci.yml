@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Backend import smoke
+        run: python -c "import sys; sys.path.insert(0, 'src'); import api_server; print('API_IMPORT_OK')"
+      - name: Backend compile check
+        run: python -c "import compileall; ok=compileall.compile_dir('src', quiet=1); print('BACKEND_COMPILE_OK' if ok else 'BACKEND_COMPILE_FAIL'); raise SystemExit(0 if ok else 1)"
+      - name: Backend API smoke checks
+        run: python scripts/smoke_checks.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Frontendd
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: Frontendd/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend lint
+        run: npm run lint
+      - name: Frontend build
+        run: npm run build

@@ -1,13 +1,9 @@
-"""Schema grounding helper for both workbook/SQLite and Postgres modes.
-
-- Workbook mode (``SDA_DATA_SOURCE=sqlite``, default): returns Arcutis workbook table
-  names and SQL hints for NL→SQL grounding.
-- Postgres mode: returns Synthea-oriented table/relationship grounding.
-"""
+"""Schema grounding helpers aligned to Arcutis ERD."""
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -19,7 +15,18 @@ def _is_workbook_sqlite_mode() -> bool:
     return (os.getenv("SDA_DATA_SOURCE") or "sqlite").strip().lower() != "postgres"
 
 
-# Arcutis workbook: single flat table — one row per HCP, all metrics included.
+def _is_arcutis_pg_mode() -> bool:
+    """Arcutis ERD mode uses normalized relational tables in Postgres."""
+    if _is_workbook_sqlite_mode():
+        return False
+    override = (os.getenv("SDA_ARCUTIS_PG") or "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        return True
+    if override in ("0", "false", "no", "off"):
+        return False
+    return True
+
+
 _WORKBOOK_TABLES: Tuple[str, ...] = (
     "Dummy_Data",
 )
@@ -29,24 +36,212 @@ _WORKBOOK_RELATIONSHIPS: Tuple[Tuple[str, str, str, str], ...] = ()
 
 
 def erd_markdown_path() -> Path:
-    """Default ERD path is ``src/ERD.md`` with optional env override."""
+    """ERD path: env override -> selected source -> fallback."""
     override = (os.getenv("SDA_ERD_PATH") or os.getenv("ERD_PATH") or "").strip()
     if override:
         p = Path(override).expanduser()
         if not p.is_absolute():
             p = (Path(__file__).resolve().parent.parent / p).resolve()
         return p
-    return Path(__file__).resolve().parent / "ERD.md"
+    here = Path(__file__).resolve().parent
+    arcutis_erd = here / "arcutis_erd_md.md"
+    if arcutis_erd.is_file():
+        return arcutis_erd
+    return here / "Arcutis_ERD.md"
+
+
+# Flat-table Arcutis: TCS ⊆ Other BNST — hard rules merged into every ERD read (see Query 7).
+ARCUTIS_TCS_ENFORCEMENT_MD = """## TCS vs Other BNST — CRITICAL (pharma_schema)
+
+- **Invariant:** For any HCP and period, **TCS TRx MUST NOT exceed Other BNST TRx** (`SUM(tcs_*) ≤ SUM(other_bnst_*)`). If violated in output, rewrite the query/narrative.
+- **Presentation:** Always show TCS **inside** Other BNST, e.g. **"Other BNST: X TRx (Y of which are TCS)"** — never as a separate add-on bucket in the headline total.
+- **Total prescriptions:** **ZORYVE + Other BNST only** — **never add TCS** to that sum.
+- **Every response that mentions TCS and totals** MUST include:
+
+> TCS is already included within Other BNST. Adding it separately would double-count those prescriptions.
+
+Market structure for arcutis_data table:
+- ZORYVE = Arcutis branded product columns (zoryve_mmm_yy)
+- other_bnst = ALL competitor products grouped (other_bnst_mmm_yy)
+- TCS = Topical Corticosteroids (tcs_mmm_yy), largest part of other_bnst
+- Total market = ZORYVE + other_bnst (do NOT add TCS separately,
+  TCS is already included inside other_bnst)
+- ZORYVE market share = zoryve / (zoryve + other_bnst) * 100
+
+SWITCH OPPORTUNITY RULES:
+- HCPs with high TCS volume but low ZORYVE share are switch targets
+- For switch opportunity queries ALWAYS use zoryve_share_pct < 30
+  as the threshold, NEVER < 10
+- Reason: average ZORYVE share in dataset is 36.78%,
+  so < 30 captures genuinely below-average adopters
+- < 10 threshold returns 0 rows and is too restrictive
+
+ZORYVE SHARE THRESHOLDS TO USE:
+- Low ZORYVE share = < 30% (use this for switch opportunity queries)
+- Medium ZORYVE share = 30% to 60%
+- High ZORYVE share = > 60%
+"""
+
+
+ARCUTIS_DECILE_ENFORCEMENT_MD = """## Decile Language Hard Rules — CRITICAL (pharma_schema)
+
+- "best" HCPs → `WHERE decile = 1` (or `WHERE q1_26_decile = 1`)
+- "worst" HCPs → `WHERE decile = 10` (or `WHERE q1_26_decile = 10`)
+- "ascending/descending" → applies to `ORDER BY` metric only
+- NEVER use ascending/descending to determine decile group.
+"""
+
+
+ARCUTIS_METRIC_CALCULATION_GUARDRAILS_MD = """## Call-Aligned Response Metric Rules - CRITICAL (pharma_schema)
+
+- Rule 1: `avg_monthly_zoryve_trx_per_hcp` MUST divide by both `COUNT(npi_id)` and the month count.
+- Rule 2: For call-response analyses, calls start at Q2 2025, so ZORYVE TRx MUST use Apr 2025-Mar 2026 only.
+- Rule 3: Call-aligned average monthly ZORYVE TRx uses 12 months, never 15 months.
+- Rule 4: `inadequate_response_hcps` applies ONLY to the 4-6 call bucket; never include 7+ calls.
+- Rule 5: TCS is a subset of Other BNST. Total TRx = ZORYVE + Other BNST ONLY; never add TCS as a third bucket.
+
+Correct call-aligned SQL fragments:
+
+```sql
+ROUND(
+  SUM(
+    COALESCE(zoryve_apr_25,0)+COALESCE(zoryve_may_25,0)+COALESCE(zoryve_jun_25,0)+
+    COALESCE(zoryve_jul_25,0)+COALESCE(zoryve_aug_25,0)+COALESCE(zoryve_sep_25,0)+
+    COALESCE(zoryve_oct_25,0)+COALESCE(zoryve_nov_25,0)+COALESCE(zoryve_dec_25,0)+
+    COALESCE(zoryve_jan_26,0)+COALESCE(zoryve_feb_26,0)+COALESCE(zoryve_mar_26,0)
+  ) / NULLIF(COUNT(npi_id), 0) / 12.0,
+  2
+) AS avg_monthly_zoryve_trx_per_hcp
+
+COUNT(*) FILTER (
+  WHERE (
+    COALESCE(q2_25_calls,0)+COALESCE(q3_25_calls,0)+
+    COALESCE(q4_25_calls,0)+COALESCE(q1_26_calls,0)
+  ) BETWEEN 4 AND 6
+  AND (
+    COALESCE(zoryve_apr_25,0)+COALESCE(zoryve_may_25,0)+COALESCE(zoryve_jun_25,0)+
+    COALESCE(zoryve_jul_25,0)+COALESCE(zoryve_aug_25,0)+COALESCE(zoryve_sep_25,0)+
+    COALESCE(zoryve_oct_25,0)+COALESCE(zoryve_nov_25,0)+COALESCE(zoryve_dec_25,0)+
+    COALESCE(zoryve_jan_26,0)+COALESCE(zoryve_feb_26,0)+COALESCE(zoryve_mar_26,0)
+  ) / 12.0 < 5
+) AS inadequate_response_hcps
+```
+"""
+
+
+_PRE_CALL_ZORYVE_COLS = ("zoryve_jan_25", "zoryve_feb_25", "zoryve_mar_25")
+_CALL_ALIGNED_ZORYVE_COLS = (
+    "zoryve_apr_25", "zoryve_may_25", "zoryve_jun_25",
+    "zoryve_jul_25", "zoryve_aug_25", "zoryve_sep_25",
+    "zoryve_oct_25", "zoryve_nov_25", "zoryve_dec_25",
+    "zoryve_jan_26", "zoryve_feb_26", "zoryve_mar_26",
+)
+_CALL_COUNT_COLS = ("q2_25_calls", "q3_25_calls", "q4_25_calls", "q1_26_calls")
+
+
+def validate_arcutis_metric_sql(sql: str | None) -> list[str]:
+    """Return call-response metric guardrail violations for generated Arcutis SQL."""
+    if not sql:
+        return []
+    compact = " ".join(str(sql).lower().split())
+    violations: list[str] = []
+    has_call_context = any(col in compact for col in _CALL_COUNT_COLS)
+    has_zoryve_metric = "zoryve" in compact and (
+        "avg_monthly" in compact or "inadequate_response" in compact
+    )
+
+    # Fix 1: average monthly ZORYVE response must be per HCP and per aligned month.
+    if "avg_monthly_zoryve" in compact:
+        if re.search(r"sum\s*\(\s*total_trx_all_hcps\s*\)\s*/\s*15(?:\.0)?", compact):
+            violations.append(
+                "avg_monthly_zoryve must not use bucket total / 15; use ZORYVE SUM / COUNT(npi_id) / 12.0."
+            )
+        if not re.search(r"count\s*\(\s*(?:distinct\s+)?npi_id\s*\)", compact):
+            violations.append("avg_monthly_zoryve must divide by COUNT(npi_id).")
+        if "/ 12.0" not in compact and "/12.0" not in compact:
+            violations.append("avg_monthly_zoryve must divide by 12.0 call-aligned months.")
+        if "/ 15.0" in compact or "/15.0" in compact:
+            violations.append("avg_monthly_zoryve must not divide by 15.0 when calls are involved.")
+
+    # Fix 2: inadequate response must be scoped strictly to the 4-6 call bucket.
+    if "inadequate_response" in compact:
+        if not re.search(r"between\s+4\s+and\s+6", compact):
+            violations.append("inadequate_response_hcps must use total calls BETWEEN 4 AND 6.")
+        if re.search(r"(?:>=|>)\s*4", compact) and not re.search(r"between\s+4\s+and\s+6", compact):
+            violations.append("inadequate_response_hcps must not include 7+ call HCPs.")
+
+    # Fix 3: call-aligned ZORYVE calculations exclude pre-call Jan-Mar 2025 months.
+    if has_call_context and has_zoryve_metric:
+        used_pre_call = [col for col in _PRE_CALL_ZORYVE_COLS if col in compact]
+        if used_pre_call:
+            violations.append(
+                "call-aligned ZORYVE TRx must exclude pre-call months: " + ", ".join(used_pre_call)
+            )
+        missing_aligned = [col for col in _CALL_ALIGNED_ZORYVE_COLS if col not in compact]
+        if missing_aligned and "avg_monthly_zoryve" in compact:
+            violations.append(
+                "avg_monthly_zoryve must include all Apr 2025-Mar 2026 ZORYVE month columns."
+            )
+
+    # Fix 4/5: TCS is a subset; do not add TCS to Other BNST in total TRx formulas.
+    adds_tcs_to_prior_expr = any(
+        "other_bnst" in compact[max(0, m.start() - 400):m.start()]
+        for m in re.finditer(r"\+\s*\(?\s*(?:sum\s*\()?\s*(?:coalesce\s*\()?\s*tcs_", compact)
+    )
+    adds_other_bnst_to_prior_tcs_expr = False
+    for m in re.finditer(r"\+\s*\(?\s*(?:sum\s*\()?\s*(?:coalesce\s*\()?\s*other_bnst", compact):
+        prior = compact[max(0, m.start() - 400):m.start()]
+        tcs_pos = prior.rfind("tcs_")
+        # A valid query may select TCS separately and later compute ZORYVE + Other BNST.
+        # Only block the reverse additive formula when TCS is the immediate formula context.
+        if tcs_pos >= 0 and "zoryve" not in prior[tcs_pos:]:
+            adds_other_bnst_to_prior_tcs_expr = True
+            break
+    if (
+        "other_bnst" in compact
+        and "tcs_" in compact
+        and (adds_tcs_to_prior_expr or adds_other_bnst_to_prior_tcs_expr)
+    ):
+        violations.append("Total TRx must be ZORYVE + Other BNST only; do not add TCS to Other BNST.")
+
+    return violations
+
+
+def arcutis_tcs_enforcement_block() -> str:
+    """Standalone TCS rules for prompts (same body as merged into ``read_erd_markdown``)."""
+    return ARCUTIS_TCS_ENFORCEMENT_MD.strip()
+
+
+def arcutis_metric_calculation_guardrails_block() -> str:
+    """Standalone call-aligned metric rules for prompts and live catalog context."""
+    return ARCUTIS_METRIC_CALCULATION_GUARDRAILS_MD.strip()
+
+ARCUTIS_LIMIT_ENFORCEMENT_MD = """
+IMPORTANT: Never add LIMIT to SQL unless user says top N, give me N, or limit to N. If user says show all or asks generally, write SQL with NO LIMIT clause.
+"""
 
 
 @traceable(name="SDA | read_erd_markdown", run_type="tool")
 def read_erd_markdown(max_chars: int | None = None) -> str:
-    """Return ERD markdown for prompt grounding; empty string if missing."""
+    """Return ERD markdown for prompt grounding; prepends immutable TCS and Decile rules; empty if missing."""
     p = erd_markdown_path()
+    plug = (
+        f"{ARCUTIS_TCS_ENFORCEMENT_MD.rstrip()}\n\n"
+        f"{ARCUTIS_DECILE_ENFORCEMENT_MD.rstrip()}\n\n"
+        f"{ARCUTIS_METRIC_CALCULATION_GUARDRAILS_MD.rstrip()}\n\n"
+        f"{ARCUTIS_LIMIT_ENFORCEMENT_MD.strip()}"
+    )
     if not p.is_file() or p.stat().st_size == 0:
-        return ""
-    text = p.read_text(encoding="utf-8", errors="replace").strip()
+        return plug if plug else ""
+    body = p.read_text(encoding="utf-8", errors="replace").strip()
+    text = f"{plug}\n\n{body}" if plug else body
+    text = text.strip()
     if max_chars is not None and len(text) > max_chars:
+        # Keep tail (main ERD) when truncating: drop from the start after plug if needed.
+        if len(plug) < max_chars and text.startswith(plug):
+            remainder = max_chars - len(plug) - len("\n\n")
+            tail = body[:remainder] + ("\n... [truncated]" if len(body) > remainder else "")
+            return f"{plug}\n\n{tail}".strip()
         return text[:max_chars] + "\n... [truncated]"
     return text
 
@@ -76,116 +271,37 @@ def pharma_qualified_table(table: str) -> str:
     return f'"{schema}"."{table}"'
 
 
-# ── Core tables from ERD.md — 18 Synthea tables (lowercase Postgres identifiers) ──────
 _ERD_BASE_TABLES: Tuple[str, ...] = (
-    # ── Reference / Master ──────────────────────────────────────────────────────
-    "patients",
-    "organizations",
-    "providers",
-    "payers",
-    # ── Transactional Hub ───────────────────────────────────────────────────────
-    "encounters",
-    # ── Financial ───────────────────────────────────────────────────────────────
-    "claims",
-    "claims_transactions",
-    # ── Clinical ────────────────────────────────────────────────────────────────
-    "conditions",
-    "medications",
-    "observations",
-    "procedures",
-    "allergies",
-    "immunizations",
-    "careplans",
-    "devices",
-    "supplies",
-    "imaging_studies",
-    # ── Payer ───────────────────────────────────────────────────────────────────
-    "payer_transitions",
+    "dim_geography",
+    "dim_hco",
+    "dim_territory",
+    "dim_hcp",
+    "dim_product_category",
+    "dim_quarter",
+    "fact_hcp_targeting",
+    "fact_rx_monthly",
+    "fact_calls",
+    "fact_hcp_annual_rx",
+    "fact_payer_mix",
 )
 
-# ── Views (not in _ERD_BASE_TABLES; listed separately for documentation) ───────────────
-_ERD_VIEWS: Tuple[str, ...] = (
-    "patient_expenses",
-    "encounter_costs",
-)
-
-# ── FK edges — (child_table, fk_column, parent_table, parent_column) ───────────────────
-# Covers all 39 FK constraints defined in ERD.md.
-# Column names match the double-quoted identifiers in the DDL.
 _ERD_FK_EDGES: Tuple[Tuple[str, str, str, str], ...] = (
-    # ── providers ──────────────────────────────────────────────────────────────
-    ("providers",           "ORGANIZATION",   "organizations",  "Id"),   # NOT NULL
-
-    # ── encounters (central hub — 4 required FKs) ──────────────────────────────
-    ("encounters",          "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("encounters",          "ORGANIZATION",   "organizations",  "Id"),   # NOT NULL
-    ("encounters",          "PROVIDER",       "providers",      "Id"),   # NOT NULL
-    ("encounters",          "PAYER",          "payers",         "Id"),   # NOT NULL
-
-    # ── claims (3 required + 3 nullable FKs) ───────────────────────────────────
-    ("claims",              "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("claims",              "PROVIDER",       "providers",      "Id"),   # NOT NULL
-    ("claims",              "PRIMARYPAYER",   "payers",         "Id"),   # NOT NULL
-    ("claims",              "SECONDARYPAYER", "payers",         "Id"),   # nullable
-    ("claims",              "ENCOUNTER_ID",   "encounters",     "Id"),   # nullable — financial→clinical link
-    ("claims",              "ORGANIZATIONID", "organizations",  "Id"),   # nullable
-
-    # ── claims_transactions (2 required + 2 nullable FKs) ──────────────────────
-    ("claims_transactions", "CLAIMID",        "claims",         "Id"),   # NOT NULL
-    ("claims_transactions", "PATIENTID",      "patients",       "Id"),   # NOT NULL
-    ("claims_transactions", "PLACEOFSERVICE", "organizations",  "Id"),   # nullable
-    ("claims_transactions", "PROVIDERID",     "providers",      "Id"),   # nullable
-
-    # ── conditions ─────────────────────────────────────────────────────────────
-    ("conditions",          "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("conditions",          "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── medications ────────────────────────────────────────────────────────────
-    ("medications",         "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("medications",         "PAYER",          "payers",         "Id"),   # NOT NULL
-    ("medications",         "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── observations ───────────────────────────────────────────────────────────
-    ("observations",        "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("observations",        "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── procedures ─────────────────────────────────────────────────────────────
-    ("procedures",          "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("procedures",          "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── allergies ──────────────────────────────────────────────────────────────
-    ("allergies",           "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("allergies",           "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── immunizations ──────────────────────────────────────────────────────────
-    ("immunizations",       "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("immunizations",       "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── careplans ──────────────────────────────────────────────────────────────
-    ("careplans",           "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("careplans",           "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── devices ────────────────────────────────────────────────────────────────
-    ("devices",             "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("devices",             "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── supplies ───────────────────────────────────────────────────────────────
-    ("supplies",            "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("supplies",            "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── imaging_studies ────────────────────────────────────────────────────────
-    ("imaging_studies",     "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("imaging_studies",     "ENCOUNTER",      "encounters",     "Id"),   # NOT NULL
-
-    # ── payer_transitions (1 required + 1 nullable FK to payers) ──────────────
-    ("payer_transitions",   "PATIENT",        "patients",       "Id"),   # NOT NULL
-    ("payer_transitions",   "PAYER",          "payers",         "Id"),   # NOT NULL
-    ("payer_transitions",   "SECONDARY_PAYER","payers",         "Id"),   # nullable
+    ("dim_hcp", "geo_id", "dim_geography", "geo_id"),
+    ("dim_hcp", "hco_id", "dim_hco", "hco_id"),
+    ("dim_hcp", "territory_id", "dim_territory", "territory_id"),
+    ("fact_hcp_targeting", "hcp_id", "dim_hcp", "hcp_id"),
+    ("fact_hcp_targeting", "quarter_id", "dim_quarter", "quarter_id"),
+    ("fact_rx_monthly", "hcp_id", "dim_hcp", "hcp_id"),
+    ("fact_rx_monthly", "category_id", "dim_product_category", "category_id"),
+    ("fact_calls", "hcp_id", "dim_hcp", "hcp_id"),
+    ("fact_calls", "quarter_id", "dim_quarter", "quarter_id"),
+    ("fact_hcp_annual_rx", "hcp_id", "dim_hcp", "hcp_id"),
+    ("fact_payer_mix", "hcp_id", "dim_hcp", "hcp_id"),
 )
 
 
 def get_all_tables() -> List[str]:
-    """Tables documented in ``ERD.md`` (schema-qualified for prompts)."""
+    """Tables documented in selected Arcutis ERD."""
     if _is_workbook_sqlite_mode():
         return list(_WORKBOOK_TABLES)
     schema = _schema_name()
@@ -193,7 +309,7 @@ def get_all_tables() -> List[str]:
 
 
 def pharma_relationships() -> List[Dict[str, str]]:
-    """All 39 FK join edges from ERD.md (child.column → parent.column)."""
+    """FK join edges from Arcutis ERD (child.column -> parent.column)."""
     if _is_workbook_sqlite_mode():
         return [
             {"left": f"{child}.{ccol}", "right": f"{parent}.{pcol}"}
@@ -211,30 +327,9 @@ def pharma_relationships() -> List[Dict[str, str]]:
 
 
 def pharma_table_docs() -> List[Dict[str, str]]:
-    """Comprehensive table blurbs for schema RAG / prompt grounding; aligned to ERD.md."""
+    """Table blurbs for schema RAG and prompt grounding."""
     if _is_workbook_sqlite_mode():
-        docs: List[Dict[str, str]] = [
-            {
-                "id": "Dummy_Data",
-                "table": "Dummy_Data",
-                "text": (
-                    "Primary and only table in the Arcutis workbook (~39,932 rows, one per HCP). "
-                    "Identity: 'NPI ID' (integer PK), 'HCP Name', 'City', 'State', 'Zip', "
-                    "'Primary Specialty', 'Secondary Specialty', 'HCO Name'. "
-                    "Geography: 'Base Territory' (city+state e.g. 'Minneapolis, MN'), 'Region' (14 regions), 'Area' (East/West). "
-                    "Targeting: \"Q1'26 Target Flag\" and \"Q4'25 Target Flag\" — values: "
-                    "'Arcutis_Primary_Target', 'Arcutis_Non_Target', 'Kowa_Target'. "
-                    "Deciles: \"Q1'26 Decile\", \"Q4'25 Decile\" (1–10; 10=highest). "
-                    "Rep calls (quarterly): \"Q2'25 Calls\", \"Q3'25 Calls\", \"Q4'25 Calls\", \"Q1'26 Calls\". "
-                    "ZORYVE TRx monthly (Jan 2025–Mar 2026, 15 cols): \"ZORYVE_Jan'25\" … \"ZORYVE_Mar'26\". "
-                    "Competitor TRx (Other BNST, 15 cols): \"Other BNST_Jan'25\" … \"Other BNST_Mar'26\". "
-                    "Total Class Size TCS (15 cols): \"TCS_Jan'25\" … \"TCS_Mar'26\". "
-                    "ZORYVE Share = ZORYVE / TCS. NO JOINs needed — this is the only table. "
-                    "ALWAYS double-quote column names with spaces or apostrophes."
-                ),
-            },
-        ]
-        return docs
+        return [{"id": "Dummy_Data", "table": "Dummy_Data", "text": "Legacy workbook table."}]
 
     schema = _schema_name()
 
@@ -242,258 +337,23 @@ def pharma_table_docs() -> List[Dict[str, str]]:
         return f"{schema}.{table}"
 
     blurbs: Dict[str, str] = {
-        # ── Reference / Master ──────────────────────────────────────────────────
-        "patients": (
-            'Patient master record ("Id" UUID PK). '
-            'Columns: "BIRTHDATE" (NOT NULL), "DEATHDATE" (nullable), "SSN" VARCHAR(11), '
-            '"FIRST" VARCHAR(100), "LAST" VARCHAR(100), "RACE" VARCHAR(50), '
-            '"ETHNICITY" VARCHAR(50), "GENDER" CHAR(1), "BIRTHPLACE" VARCHAR(255), '
-            '"ADDRESS" VARCHAR(255), "CITY" VARCHAR(100), "STATE" VARCHAR(50), '
-            '"ZIP" VARCHAR(10), "LAT" NUMERIC(9,6), "LON" NUMERIC(9,6), '
-            '"HEALTHCARE_EXPENSES" NUMERIC(14,2) DEFAULT 0, '
-            '"HEALTHCARE_COVERAGE" NUMERIC(14,2) DEFAULT 0. '
-            'Root anchor for every clinical, financial, and payer table. '
-            'Always join on patients."Id" = child."PATIENT" (or "PATIENTID").'
-        ),
-        "organizations": (
-            'Healthcare facilities ("Id" UUID PK). '
-            'Columns: "NAME" VARCHAR(255), "ADDRESS", "CITY", "STATE", "ZIP", '
-            '"LAT" NUMERIC(9,6), "LON" NUMERIC(9,6), "PHONE" VARCHAR(20), '
-            '"REVENUE" NUMERIC(14,2), "UTILIZATION" INTEGER DEFAULT 0. '
-            'Referenced by providers ("ORGANIZATION"), encounters ("ORGANIZATION"), '
-            'claims ("ORGANIZATIONID" nullable), and claims_transactions ("PLACEOFSERVICE" nullable). '
-            'Join: organizations."Id" = providers."ORGANIZATION".'
-        ),
-        "providers": (
-            'Healthcare providers / clinicians ("Id" UUID PK). '
-            'Columns: "ORGANIZATION" UUID NOT NULL FK → organizations."Id", '
-            '"NAME" VARCHAR(255), "GENDER" CHAR(1), "SPECIALITY" VARCHAR(100), '
-            '"ADDRESS", "CITY", "STATE", "ZIP", "LAT" NUMERIC(9,6), "LON" NUMERIC(9,6), '
-            '"UTILIZATION" INTEGER DEFAULT 0. '
-            'Specialties include General Practice, Cardiology, Orthopedics, Neurology, '
-            'Oncology, Pediatrics, Gynecology, Dermatology, Psychiatry, Radiology, '
-            'Emergency Medicine. '
-            'Join to organizations: providers."ORGANIZATION" = organizations."Id". '
-            'Join to encounters: encounters."PROVIDER" = providers."Id".'
-        ),
-        "payers": (
-            'Insurance payers ("Id" UUID PK). '
-            'Columns: "NAME" VARCHAR(255), "ADDRESS", "CITY", "STATE_HEADQUARTERED" VARCHAR(50), '
-            '"ZIP", "PHONE" VARCHAR(20), '
-            '"AMOUNT_COVERED" NUMERIC(16,2), "AMOUNT_UNCOVERED" NUMERIC(16,2), '
-            '"REVENUE" NUMERIC(16,2), '
-            '"COVERED_ENCOUNTERS" INTEGER, "UNCOVERED_ENCOUNTERS" INTEGER, '
-            '"COVERED_MEDICATIONS" INTEGER, "UNCOVERED_MEDICATIONS" INTEGER, '
-            '"COVERED_PROCEDURES" INTEGER, "UNCOVERED_PROCEDURES" INTEGER, '
-            '"COVERED_IMMUNIZATIONS" INTEGER, "UNCOVERED_IMMUNIZATIONS" INTEGER, '
-            '"UNIQUE_CUSTOMERS" INTEGER, "QOLS_AVG" NUMERIC(6,4), "MEMBER_MONTHS" INTEGER. '
-            'Payer names include Medicare, Medicaid, Blue Cross Blue Shield, Aetna, '
-            'UnitedHealthcare, Cigna, Humana, Kaiser Permanente, Anthem. '
-            'Referenced by encounters, medications, claims (PRIMARYPAYER + SECONDARYPAYER), '
-            'and payer_transitions (PAYER + SECONDARY_PAYER).'
-        ),
-
-        # ── Transactional Hub ────────────────────────────────────────────────────
-        "encounters": (
-            'Central clinical event hub ("Id" UUID PK). '
-            'Indexes: idx_enc_patient ("PATIENT"), idx_enc_payer ("PAYER"), idx_enc_start ("START"). '
-            'Columns: "START" TIMESTAMP NOT NULL, "STOP" TIMESTAMP, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ORGANIZATION" UUID NOT NULL FK → organizations."Id", '
-            '"PROVIDER" UUID NOT NULL FK → providers."Id", '
-            '"PAYER" UUID NOT NULL FK → payers."Id", '
-            '"ENCOUNTERCLASS" VARCHAR(50) — ambulatory/inpatient/emergency/urgentcare/wellness/outpatient, '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255), '
-            '"BASE_ENCOUNTER_COST" NUMERIC(10,2), "TOTAL_CLAIM_COST" NUMERIC(10,2), '
-            '"PAYER_COVERAGE" NUMERIC(10,2), "REASONCODE" VARCHAR(20), "REASONDESCRIPTION" VARCHAR(255). '
-            'Every clinical table (conditions, medications, observations, procedures, allergies, '
-            'immunizations, careplans, devices, supplies, imaging_studies) has "ENCOUNTER" FK → encounters."Id". '
-            'Financial chain: encounters → claims (via claims."ENCOUNTER_ID") → claims_transactions.'
-        ),
-
-        # ── Financial ────────────────────────────────────────────────────────────
-        "claims": (
-            'Insurance claim headers ("Id" UUID PK — enhanced Synthea). '
-            'Indexes: idx_claims_patient ("PATIENT"), idx_claims_encounter ("ENCOUNTER_ID"). '
-            'Required FKs: "PATIENT" → patients."Id", "PROVIDER" → providers."Id", '
-            '"PRIMARYPAYER" → payers."Id". '
-            'Nullable FKs: "SECONDARYPAYER" → payers."Id", '
-            '"ENCOUNTER_ID" → encounters."Id" (key financial→clinical bridge), '
-            '"ORGANIZATIONID" → organizations."Id". '
-            'Non-FK UUIDs (no DB constraint): "REFERREDID", "SUPERVISINGID", '
-            '"SERVICING_PROVIDER", "SUPERVISINGPROVIDERID". '
-            'Diagnosis columns: "DIAGNOSIS1" through "DIAGNOSIS8" VARCHAR(20) ICD-10 codes. '
-            'Other columns: "DEPARTMENT" INTEGER, "CLAIMID" VARCHAR(50) (external string reference), '
-            '"CURRENTILLNESSDATE" DATE, "SERVICEDATE" DATE, '
-            '"STATUS1"/"STATUS2" VARCHAR(20), "OUTSTANDING1"/"OUTSTANDING2" NUMERIC(10,2), '
-            '"LASTBILLEDDATE1"/"LASTBILLEDDATE2" DATE, '
-            '"HEALTHCARECLAIMTYPEID1"/"HEALTHCARECLAIMTYPEID2" INTEGER. '
-            'Join to transactions: claims_transactions."CLAIMID" = claims."Id".'
-        ),
-        "claims_transactions": (
-            'Individual billing line items per claim ("ID" UUID PK). '
-            'Index: idx_ct_claim ("CLAIMID"). '
-            'Required FKs: "CLAIMID" → claims."Id", "PATIENTID" → patients."Id". '
-            'Nullable FKs: "PLACEOFSERVICE" → organizations."Id", "PROVIDERID" → providers."Id". '
-            'Non-FK UUID: "SUPERVISINGPROVIDERID", "APPOINTMENTID", "PATIENTINSURANCEID". '
-            'Key financial columns: "TYPE" VARCHAR(50) CHARGE/PAYMENT/ADJUSTMENT/TRANSFER, '
-            '"AMOUNT" NUMERIC(10,2), "METHOD" VARCHAR(50) CASH/CHECK/CC/INSURANCE, '
-            '"PAYMENTS" NUMERIC(10,2), "ADJUSTMENTS" NUMERIC(10,2), '
-            '"TRANSFERS" NUMERIC(10,2), "OUTSTANDING" NUMERIC(10,2), '
-            '"UNITAMOUNT" NUMERIC(10,2), "UNITS" INTEGER. '
-            'Billing reference columns: "CHARGEID" INTEGER, "PROCEDURECODE" VARCHAR(20) CPT, '
-            '"MODIFIER1"/"MODIFIER2" VARCHAR(10), '
-            '"DIAGNOSISREF1"–"DIAGNOSISREF4" INTEGER (pointer to claims.DIAGNOSIS#), '
-            '"DEPARTMENTID" INTEGER, "FEESCHEDULEID" INTEGER, "TRANSFEROUTID" INTEGER, '
-            '"TRANSFERTYPE" VARCHAR(20), "FROMDATE" DATE, "TODATE" DATE, '
-            '"NOTES" TEXT, "LINENOTE" TEXT.'
-        ),
-
-        # ── Clinical ─────────────────────────────────────────────────────────────
-        "conditions": (
-            'Active and resolved diagnoses (no surrogate PK — composite key: "PATIENT"+"START"+"CODE"). '
-            'Indexes: idx_cond_patient ("PATIENT"), idx_cond_encounter ("ENCOUNTER"). '
-            'Columns: "START" DATE NOT NULL, "STOP" DATE (nullable = active condition), '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255). '
-            'Use STOP IS NULL to find currently active conditions. '
-            'Common codes: 44054006 Diabetes type 2, 59621000 Hypertension, 195967001 Asthma. '
-            'Oncology codes: 363346000 Malignant neoplastic disease, 254837009 Breast cancer, '
-            '93880001 Lung cancer, 109838007 Colon cancer, 126906006 Prostate cancer, '
-            '372064008 Bladder tumor, 188340000 Melanoma, 447886005 Leukemia, '
-            '109989006 Multiple myeloma, 415068001 Pancreatic carcinoma. '
-            'For "patients eligible for oncology clinical trial", filter CODE IN those oncology SNOMEDs AND "STOP" IS NULL (active); '
-            'do NOT use a clinical_trial table — that table does not exist in this Synthea database.'
-        ),
-        "medications": (
-            'Medication orders (no surrogate PK — composite key: "PATIENT"+"START"+"CODE"). '
-            'Indexes: idx_med_patient ("PATIENT"), idx_med_encounter ("ENCOUNTER"). '
-            'Columns: "START" DATE NOT NULL, "STOP" DATE, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"PAYER" UUID NOT NULL FK → payers."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) RxNorm, "DESCRIPTION" VARCHAR(255), '
-            '"BASE_COST" NUMERIC(10,2), "PAYER_COVERAGE" NUMERIC(10,2), '
-            '"DISPENSES" INTEGER, "TOTALCOST" NUMERIC(10,2), '
-            '"REASONCODE" VARCHAR(20), "REASONDESCRIPTION" VARCHAR(255). '
-            'Common drugs: Lisinopril, Metformin, Atorvastatin, Albuterol, Omeprazole. '
-            'Use STOP IS NULL for currently active medications. '
-            'Payer coverage analysis: SUM("PAYER_COVERAGE") vs SUM("TOTALCOST").'
-        ),
-        "observations": (
-            'Clinical measurements and lab results (no surrogate PK — composite: "PATIENT"+"DATE"+"CODE"). '
-            'Indexes: idx_obs_patient ("PATIENT"), idx_obs_encounter ("ENCOUNTER"). '
-            'Columns: "DATE" DATE NOT NULL, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CATEGORY" VARCHAR(50) — vital-signs/laboratory/survey, '
-            '"CODE" VARCHAR(20) LOINC, "DESCRIPTION" VARCHAR(255), '
-            '"VALUE" VARCHAR(255), "UNITS" VARCHAR(50), '
-            '"TYPE" VARCHAR(20) — numeric/text/date. '
-            'Common LOINC codes: 8302-2 Body Height, 29463-7 Body Weight, 39156-5 BMI, '
-            '8867-4 Heart rate, 8480-6 Systolic BP, 8462-4 Diastolic BP, '
-            '2093-3 Cholesterol, 4548-4 HbA1c, 2339-0 Glucose. '
-            'Cast "VALUE" to NUMERIC for numeric analysis: "VALUE"::NUMERIC.'
-        ),
-        "procedures": (
-            'Clinical procedures performed (no surrogate PK — composite: "PATIENT"+"START"+"CODE"). '
-            'Indexes: idx_proc_patient ("PATIENT"), idx_proc_encounter ("ENCOUNTER"). '
-            'Columns: "START" TIMESTAMP NOT NULL, "STOP" TIMESTAMP, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255), '
-            '"BASE_COST" NUMERIC(10,2), '
-            '"REASONCODE" VARCHAR(20), "REASONDESCRIPTION" VARCHAR(255). '
-            'Common procedures: Medication Reconciliation, Depression screening, '
-            'Colonoscopy, Screening mammography, Physical examination.'
-        ),
-        "allergies": (
-            'Patient allergy and intolerance records (no surrogate PK — composite: "PATIENT"+"CODE"). '
-            'Index: idx_allergy_patient ("PATIENT"). '
-            'Columns: "START" DATE NOT NULL, "STOP" DATE, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "SYSTEM" VARCHAR(20) SNOMED-CT/RxNorm, '
-            '"DESCRIPTION" VARCHAR(255), "TYPE" VARCHAR(50) allergy/intolerance, '
-            '"CATEGORY" VARCHAR(50) medication/food/environment, '
-            '"REACTION1" VARCHAR(20) SNOMED code, "DESCRIPTION1" VARCHAR(255) reaction description, '
-            '"SEVERITY1" VARCHAR(20) MILD/MODERATE/SEVERE, '
-            '"REACTION2" VARCHAR(20), "DESCRIPTION2" VARCHAR(255), "SEVERITY2" VARCHAR(20). '
-            'Common allergens: Penicillin (medication), Peanuts (food), Latex (environment).'
-        ),
-        "immunizations": (
-            'Vaccination records (no surrogate PK — composite: "PATIENT"+"DATE"+"CODE"). '
-            'Index: idx_immun_patient ("PATIENT"). '
-            'Columns: "DATE" DATE NOT NULL, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" INTEGER CVX vaccine code, "DESCRIPTION" VARCHAR(255), '
-            '"BASE_COST" NUMERIC(10,2). '
-            'Common CVX codes: 140 Influenza, 115 Tdap, 21 Varicella, 20 DTaP.'
-        ),
-        "careplans": (
-            'Care plan assignments ("Id" UUID PK). '
-            'Columns: "START" DATE NOT NULL, "STOP" DATE, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255), '
-            '"REASONCODE" VARCHAR(20), "REASONDESCRIPTION" VARCHAR(255). '
-            'Use STOP IS NULL for currently active care plans.'
-        ),
-        "devices": (
-            'Medical device assignments (no surrogate PK — composite: "PATIENT"+"START"+"CODE"). '
-            'Columns: "START" DATE NOT NULL, "STOP" DATE, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255), '
-            '"UDI" VARCHAR(100) FDA Unique Device Identifier. '
-            'Use STOP IS NULL for currently implanted / active devices.'
-        ),
-        "supplies": (
-            'Medical supply dispensing records (no surrogate PK — composite: "PATIENT"+"DATE"+"CODE"). '
-            'Columns: "DATE" DATE NOT NULL, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"CODE" VARCHAR(20) SNOMED-CT, "DESCRIPTION" VARCHAR(255), '
-            '"QUANTITY" INTEGER. '
-            'Includes consumables such as bandages, syringes, test strips.'
-        ),
-        "imaging_studies": (
-            'Radiology / imaging study records ("Id" UUID PK). '
-            'Columns: "DATE" DATE NOT NULL, '
-            '"PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"ENCOUNTER" UUID NOT NULL FK → encounters."Id", '
-            '"SERIES_UID" VARCHAR(100) DICOM Series UID, '
-            '"BODYSITE_CODE" VARCHAR(20) SNOMED-CT, "BODYSITE_DESCRIPTION" VARCHAR(255), '
-            '"MODALITY_CODE" VARCHAR(10) — XRAY/CT/MR/US, '
-            '"MODALITY_DESCRIPTION" VARCHAR(100), '
-            '"INSTANCE_UID" VARCHAR(100) DICOM Instance UID, '
-            '"SOP_CODE" VARCHAR(50) DICOM SOP Class, "SOP_DESCRIPTION" VARCHAR(255), '
-            '"PROCEDURECODE" VARCHAR(20) SNOMED-CT procedure. '
-            'Filter by "MODALITY_CODE" for modality-specific studies.'
-        ),
-
-        # ── Payer ────────────────────────────────────────────────────────────────
-        "payer_transitions": (
-            'Payer enrollment history per patient (no surrogate PK — composite: "PATIENT"+"START_YEAR"+"PAYER"). '
-            'Columns: "PATIENT" UUID NOT NULL FK → patients."Id", '
-            '"MEMBERID" VARCHAR(50) payer member ID, '
-            '"START_YEAR" INTEGER, "END_YEAR" INTEGER, '
-            '"PAYER" UUID NOT NULL FK → payers."Id", '
-            '"SECONDARY_PAYER" UUID nullable FK → payers."Id", '
-            '"PLAN_OWNERSHIP" VARCHAR(20) — Self/Employer/Government/Medicare/Medicaid, '
-            '"OWNER_NAME" VARCHAR(255). '
-            'Use to reconstruct a patient\'s insurance history over time. '
-            'Join primary payer: payer_transitions."PAYER" = payers."Id". '
-            'Join secondary payer: payer_transitions."SECONDARY_PAYER" = payers."Id" (LEFT JOIN).'
-        ),
+        "dim_geography": "Normalized city/state/zip location dimension.",
+        "dim_hco": "Health care organization master with soft-delete activity flag.",
+        "dim_territory": "Territory hierarchy dimension (base_territory, region, area).",
+        "dim_hcp": "HCP master with NPI business key and references to geography/HCO/territory.",
+        "dim_product_category": "Product category dimension with only ZORYVE and BNST codes.",
+        "dim_quarter": "Quarter dimension for standardized quarter references.",
+        "fact_hcp_targeting": "Quarter-level HCP targeting fact (decile and target flag).",
+        "fact_rx_monthly": "Monthly TRx fact by HCP, product category, and subtype.",
+        "fact_calls": "Quarterly call count fact by HCP.",
+        "fact_hcp_annual_rx": "Annual TRx fact with payer channel totals and percentages.",
+        "fact_payer_mix": "Payer-level annual value fact by HCP.",
     }
 
     docs: List[Dict[str, str]] = []
     for table in _ERD_BASE_TABLES:
         tq = fq(table)
-        text = blurbs.get(table, f"Table {tq} — see ERD.md for full column reference.")
+        text = blurbs.get(table, f"Table {tq} — see arcutis_erd_md.md for full column reference.")
         docs.append({"id": tq, "table": tq, "text": f"Table: {tq} — {text}"})
     return docs
 
@@ -501,5 +361,3 @@ def pharma_table_docs() -> List[Dict[str, str]]:
 def pharma_docs_and_relationships() -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """Table blurbs + FK edges for schema RAG. Aligned to ERD.md (Synthea Enhanced Schema)."""
     return pharma_table_docs(), pharma_relationships()
-
-

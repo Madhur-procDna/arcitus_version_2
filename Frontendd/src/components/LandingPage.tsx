@@ -2,17 +2,16 @@
 import React, { useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { queryChat, getOrCreateSessionIdForChat } from '@/utils/api/chat';
-import { upsertRecentChat } from '@/utils/recentChats';
 
 const LandingPage = () => {
   const [inputValue, setInputValue] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const router = useRouter();
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      void handleSubmit();
     }
   };
 
@@ -26,9 +25,10 @@ const LandingPage = () => {
   };
 
   const handleSubmit = async () => {
-    if (!inputValue.trim()) {
+    if (!inputValue.trim() || isSubmitting) {
       return;
     }
+    setIsSubmitting(true);
 
     const userQuestion = inputValue.trim();
     const chatId = `arcutis-${Date.now()}`;
@@ -38,55 +38,12 @@ const LandingPage = () => {
     resetTextareaHeight();
     setInputValue('');
 
+    // Use only router.push — no hard-reload fallback.
+    // The old window.location.assign fallback fired after 250ms while
+    // /chat/pending was still compiling (3-4s first load), causing a full
+    // page reload that wiped React state and appeared to "lose" the question.
     router.push('/chat/pending');
-
-    // Call API in the background
-    try {
-      const sessionId = getOrCreateSessionIdForChat(chatId);
-      const result = await queryChat({
-        question: userQuestion,
-        sessionId,
-      });
-
-      const thread = [
-        { role: 'user' as const, content: userQuestion },
-        {
-          role: 'assistant' as const,
-          content: result.ok
-            ? result.response
-            : `Sorry, something went wrong.\n\n${result.response}`,
-          meta: result.ok
-            ? {
-                cacheHit: result.cache_hit,
-                durationMs: result.duration_ms,
-                sql: result.sql,
-                chart: result.chart,
-              }
-            : { failed: true },
-        },
-      ];
-
-      sessionStorage.setItem('currentChatMessages', JSON.stringify(thread));
-      sessionStorage.setItem('activeChatId', chatId);
-      upsertRecentChat(chatId, thread);
-
-      router.push(`/chat/${chatId}`);
-    } catch (error) {
-      const thread = [
-        { role: 'user' as const, content: userQuestion },
-        {
-          role: 'assistant' as const,
-          content: 'Sorry, I encountered an error processing your request. Please try again.',
-          meta: { failed: true },
-        },
-      ];
-
-      sessionStorage.setItem('currentChatMessages', JSON.stringify(thread));
-      sessionStorage.setItem('activeChatId', chatId);
-      upsertRecentChat(chatId, thread);
-
-      router.push(`/chat/${chatId}`);
-    }
+    setIsSubmitting(false);
   };
 
   return (
@@ -112,11 +69,17 @@ const LandingPage = () => {
             Hi User
           </h1>
           <p className="text-black text-[22px] mt-2 font-normal leading-8">
-            I am here to assist regarding pharma query
+            Have a question? Just ask - your data speaks your language
           </p>
 
           {/* Input Box */}
-          <div className="bg-white rounded-[12px] shadow-[0px_0px_12px_0px_#0000001A] max-w-4xl mx-auto mt-[20px] mb-4 fade-in delay-2">
+          <form
+            className="bg-white rounded-[12px] shadow-[0px_0px_12px_0px_#0000001A] max-w-4xl mx-auto mt-[20px] mb-4 fade-in delay-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSubmit();
+            }}
+          >
             <div className="pl-[12px] pr-[14px] py-[12px]">
               <div className="flex items-start pl-1 text-sm justify-between gap-2">
                 <Image
@@ -130,9 +93,10 @@ const LandingPage = () => {
                 <textarea
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
-                  onKeyPress={handleKeyPress}
+                  onKeyDown={handleKeyDown}
                   placeholder="What would you like to know?"
                   rows={1}
+                  disabled={isSubmitting}
                   className="flex-1 text-black custom-scrollbar font-normal text-[16px] leading-[22px] bg-transparent border-none outline-none resize-none overflow-hidden min-h-[22px] max-h-[88px]"
                   style={{
                     height: 'auto',
@@ -152,15 +116,15 @@ const LandingPage = () => {
                 />
 
                 <button
-                  onClick={handleSubmit}
+                  type="submit"
                   className="flex cursor-pointer items-center justify-end rounded-full transition-colors duration-200 flex-shrink-0"
-                  disabled={!inputValue.trim()}
+                  disabled={!inputValue.trim() || isSubmitting}
                 >
                   <Image src="/Images/SendIcon.svg" alt="Submit" width={22} height={22} />
                 </button>
               </div>
             </div>
-          </div>
+          </form>
         </div>
       </div>
     </div>

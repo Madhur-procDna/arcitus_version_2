@@ -1,5 +1,9 @@
 export function escapeCsvCell(v: unknown): string {
-  const s = v === null || v === undefined ? '' : String(v);
+  let s = v === null || v === undefined ? '' : String(v);
+  // Neutralize spreadsheet formula injection when CSV is opened in Excel/Sheets.
+  if (/^[=\-+@]/.test(s)) {
+    s = `'${s}`;
+  }
   if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -16,7 +20,14 @@ export function downloadResultTableCsv(columns: string[], rows: Record<string, u
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `query-result-${Date.now()}.csv`;
+  const d = new Date();
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  a.download = `arcutis_data_${iso}.csv`;
+  // Some environments ignore a bare `a.click()` unless the element is attached.
+  a.style.display = 'none';
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  // Revoke after the browser has a chance to start the download.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

@@ -1,21 +1,77 @@
 {
   "project": "Arcutis Analytics",
-  "workbook": "Arcutis Dummy Data v1.xlsx",
-  "product": "ZORYVE",
+  "data_source": "postgres",
+  "database": "Arcutisdb",
+  "schema": "public",
+  "erd_doc": "arcutis_erd_md.md",
   "tables": {
-    "Dummy_Data": {
-      "description": "Flat HCP-level table with monthly TRx (ZORYVE, Other BNST, TCS), quarterly call counts, targeting flags, deciles, and geography for ~39,932 HCPs across Jan 2025 – Mar 2026.",
-      "row_count_approx": 39932,
-      "primary_key": "NPI ID",
-      "key_columns": ["NPI ID", "HCP Name", "Base Territory", "Region", "Area", "Q1'26 Target Flag", "Q4'25 Target Flag"]
+    "dim_geography": {
+      "description": "Normalized city/state/zip dimension.",
+      "primary_key": "geo_id",
+      "columns": ["geo_id", "city", "state", "zip", "created_at", "updated_at"]
+    },
+    "dim_hco": {
+      "description": "Health care organization master.",
+      "primary_key": "hco_id",
+      "columns": ["hco_id", "hco_name", "is_active", "created_at", "updated_at"]
+    },
+    "dim_territory": {
+      "description": "Territory hierarchy with base territory, region, and area.",
+      "primary_key": "territory_id",
+      "columns": ["territory_id", "base_territory", "region", "area", "is_active", "created_at", "updated_at"]
+    },
+    "dim_hcp": {
+      "description": "Master HCP dimension keyed by NPI.",
+      "primary_key": "hcp_id",
+      "columns": ["hcp_id", "npi_id", "hcp_name", "primary_specialty", "secondary_specialty", "geo_id", "hco_id", "territory_id", "is_active", "created_at", "updated_at"]
+    },
+    "dim_product_category": {
+      "description": "Product category dimension with ZORYVE and BNST.",
+      "primary_key": "category_id",
+      "columns": ["category_id", "category_code", "category_label", "includes_tcs", "description", "created_at"]
+    },
+    "dim_quarter": {
+      "description": "Quarter reference dimension.",
+      "primary_key": "quarter_id",
+      "columns": ["quarter_id", "quarter_code", "quarter_label", "year", "quarter_num", "start_date", "end_date"]
+    },
+    "fact_hcp_targeting": {
+      "description": "Quarterly targeting fact with decile and target flag.",
+      "primary_key": "targeting_id",
+      "columns": ["targeting_id", "hcp_id", "quarter_id", "decile", "target_flag", "created_at", "updated_at"]
+    },
+    "fact_rx_monthly": {
+      "description": "Monthly TRx fact by HCP, category, and subtype.",
+      "primary_key": "rx_id",
+      "columns": ["rx_id", "hcp_id", "category_id", "rx_sub_type", "rx_year", "rx_month", "rx_month_label", "trx_count", "created_at", "updated_at"]
+    },
+    "fact_calls": {
+      "description": "Quarterly call count fact by HCP.",
+      "primary_key": "call_id",
+      "columns": ["call_id", "hcp_id", "quarter_id", "call_count", "created_at", "updated_at"]
+    },
+    "fact_hcp_annual_rx": {
+      "description": "Annual TRx totals and payer percentage split by HCP.",
+      "primary_key": "annual_rx_id",
+      "columns": ["annual_rx_id", "hcp_id", "rx_year", "total_trx", "commercial_trx", "medicare_trx", "medicaid_trx", "commercial_pct", "medicare_pct", "medicaid_pct", "created_at", "updated_at"]
+    },
+    "fact_payer_mix": {
+      "description": "Annual payer breakdown by HCP and payer name.",
+      "primary_key": "payer_mix_id",
+      "columns": ["payer_mix_id", "hcp_id", "rx_year", "payer_name", "payer_value", "created_at", "updated_at"]
     }
   },
-  "join_hints": {
-    "notes": [
-      "Single-table dataset — no JOINs required.",
-      "Always double-quote column names with spaces or apostrophes.",
-      "Q1'26 = Jan'26 + Feb'26 + Mar'26; Q4'25 = Oct'25 + Nov'25 + Dec'25.",
-      "ZORYVE Share = ZORYVE / TCS (use NULLIF to avoid div-by-zero)."
-    ]
-  }
+  "relationships": [
+    {"from_table": "dim_hcp", "from_column": "geo_id", "to_table": "dim_geography", "to_column": "geo_id"},
+    {"from_table": "dim_hcp", "from_column": "hco_id", "to_table": "dim_hco", "to_column": "hco_id"},
+    {"from_table": "dim_hcp", "from_column": "territory_id", "to_table": "dim_territory", "to_column": "territory_id"},
+    {"from_table": "fact_hcp_targeting", "from_column": "hcp_id", "to_table": "dim_hcp", "to_column": "hcp_id"},
+    {"from_table": "fact_hcp_targeting", "from_column": "quarter_id", "to_table": "dim_quarter", "to_column": "quarter_id"},
+    {"from_table": "fact_rx_monthly", "from_column": "hcp_id", "to_table": "dim_hcp", "to_column": "hcp_id"},
+    {"from_table": "fact_rx_monthly", "from_column": "category_id", "to_table": "dim_product_category", "to_column": "category_id"},
+    {"from_table": "fact_calls", "from_column": "hcp_id", "to_table": "dim_hcp", "to_column": "hcp_id"},
+    {"from_table": "fact_calls", "from_column": "quarter_id", "to_table": "dim_quarter", "to_column": "quarter_id"},
+    {"from_table": "fact_hcp_annual_rx", "from_column": "hcp_id", "to_table": "dim_hcp", "to_column": "hcp_id"},
+    {"from_table": "fact_payer_mix", "from_column": "hcp_id", "to_table": "dim_hcp", "to_column": "hcp_id"}
+  ]
 }

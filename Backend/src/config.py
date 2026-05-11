@@ -143,7 +143,7 @@ class Settings(BaseSettings):
 
     # Workbook for SQLite mode (``sda_data_source=sqlite``). Override with env ``DATA_FILE_PATH``.
     # Relative paths are resolved against ``Backend/`` and ``Backend/data/`` (see ``resolve_workbook_path``).
-    data_file_path: str = r"C:\Users\MadhurGauri\OneDrive - ProcDNA Analytics Pvt. Ltd\Desktop\arcetus\Backend\data\Arcutis Dummy Data v1.xlsx"
+    data_file_path: str = "data/Arcutis Dummy Data v1.xlsx"
 
     # sqlite | postgres — sqlite loads ``data_file_path`` into in-memory SQLite (see ``data_loader``).
     sda_data_source: str = "sqlite"
@@ -176,6 +176,10 @@ class Settings(BaseSettings):
     def _normalize_data_file_path(self) -> "Settings":
         p = resolve_workbook_path(self.data_file_path)
         self.data_file_path = str(p)
+        if self.sda_data_source.lower() == "sqlite" and not Path(self.data_file_path).exists():
+            raise ValueError(
+                "SQLite mode requires a readable DATA_FILE_PATH. Set DATA_FILE_PATH to a valid workbook path."
+            )
         return self
 
 

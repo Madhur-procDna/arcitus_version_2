@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readSession } from '../auth/_lib';
 
 /** Allow long NL→SQL→DB→LLM runs (default 10 minutes). Set SDA_QUERY_PROXY_TIMEOUT_MS in .env.local if needed. */
 export const maxDuration = 300;
@@ -49,6 +50,14 @@ function backendBaseCandidates(primary: string): string[] {
 }
 
 export async function POST(req: NextRequest) {
+  const session = await readSession();
+  if (!session.authenticated) {
+    return NextResponse.json(
+      { success: false, response: '', error: 'Unauthorized. Please log in.' },
+      { status: 401 },
+    );
+  }
+
   const ct = req.headers.get('content-type') || '';
   let bodyText: string;
 
@@ -105,7 +114,12 @@ export async function POST(req: NextRequest) {
     try {
       const upstream = await fetch(target.toString(), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.SDA_BACKEND_API_KEY
+            ? { 'X-API-Key': process.env.SDA_BACKEND_API_KEY }
+            : {}),
+        },
         body: bodyText,
         cache: 'no-store',
         signal: AbortSignal.timeout(PROXY_FETCH_MS),

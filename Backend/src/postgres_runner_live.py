@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from env_loader import load_application_dotenv
-from pharma_schema import pharma_db_schema
+from pharma_schema import pharma_db_schema, validate_arcutis_metric_sql
 from retry_utils import postgres_retry
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,76 @@ else:
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_STATEMENT_TIMEOUT_MS = 60000
 DEFAULT_MAX_ROWS = 5000
+
+_ARCUTIS_PG_INDEX_LOCK = threading.Lock()
+_ARCUTIS_PG_INDEX_DONE = False
+
+# Filter indexes on flat ``arcutis_data`` (aligned with SQLite workbook path).
+_ARCUTIS_PG_INDEX_SPECS: Tuple[Tuple[str, str], ...] = (
+    ("idx_arcutis_area", "area"),
+    ("idx_arcutis_state", "state"),
+    ("idx_arcutis_region", "region"),
+    ("idx_arcutis_target_flag", "q1_26_target_flag"),
+    ("idx_arcutis_decile", "q1_26_decile"),
+    ("idx_arcutis_specialty", "primary_specialty"),
+    ("idx_arcutis_npi", "npi_id"),
+)
+
+
+def _ensure_arcutis_data_indexes_postgres(conn: Any) -> None:
+    """Once per process: CREATE INDEX IF NOT EXISTS on ``{schema}.arcutis_data`` when present."""
+    global _ARCUTIS_PG_INDEX_DONE
+    if _ARCUTIS_PG_INDEX_DONE or pg_sql is None:
+        return
+    with _ARCUTIS_PG_INDEX_LOCK:
+        if _ARCUTIS_PG_INDEX_DONE or pg_sql is None:
+            return
+        schema = pharma_db_schema()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = 'arcutis_data'
+                    """,
+                    (schema,),
+                )
+                col_lower = {str(r[0]).lower() for r in cur.fetchall()}
+                if not col_lower:
+                    logger.debug(
+                        "[postgres] arcutis_data not in schema %s — skipping index bootstrap",
+                        schema,
+                    )
+                    _ARCUTIS_PG_INDEX_DONE = True
+                    return
+                n_ok = 0
+                for idx_name, col in _ARCUTIS_PG_INDEX_SPECS:
+                    if col.lower() not in col_lower:
+                        continue
+                    stmt = pg_sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
+                        pg_sql.Identifier(idx_name),
+                        pg_sql.Identifier(schema),
+                        pg_sql.Identifier("arcutis_data"),
+                        pg_sql.Identifier(col),
+                    )
+                    cur.execute(stmt)
+                    n_ok += 1
+                if n_ok:
+                    logger.info(
+                        "[postgres] ensured %d indexes on %s.arcutis_data",
+                        n_ok,
+                        schema,
+                    )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("[postgres] arcutis_data index bootstrap failed: %s", exc)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            _ARCUTIS_PG_INDEX_DONE = True
 
 
 def _env_int(key: str, default: int) -> int:
@@ -228,19 +299,22 @@ def live_table_names_prompt_text(
 
 @postgres_retry
 def _execute_query(sql: str, max_rows: int | None) -> List[Dict[str, Any]]:
+    # Metric QA guard: reject known-bad call-response formulas before execution.
+    metric_violations = validate_arcutis_metric_sql(sql)
+    if metric_violations:
+        raise RuntimeError("Arcutis metric SQL validation failed: " + "; ".join(metric_violations))
     cfg = _db_config()
     statement_timeout_ms = _env_int(
         "POSTGRES_STATEMENT_TIMEOUT_MS", DEFAULT_STATEMENT_TIMEOUT_MS
     )
     with psycopg2.connect(**cfg) as conn:
+        _ensure_arcutis_data_indexes_postgres(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             _set_session_search_path(cur)
             cur.execute(f"SET LOCAL statement_timeout = {statement_timeout_ms};")
             cur.execute(sql)
-            if max_rows is None:
-                rows = cur.fetchall()
-            else:
-                rows = cur.fetchmany(max_rows)
+            # No row caps — return everything the DB gives back
+            rows = cur.fetchall()
             out: List[Dict[str, Any]] = []
             for row in rows:
                 out.append({k: _json_safe_cell(v) for k, v in dict(row).items()})
@@ -257,4 +331,3 @@ def run_query(sql: str, max_rows: int | None = None, unlimited: bool = False) ->
         return _execute_query(sql, max_rows)
     except Exception as exc:
         raise RuntimeError(f"Postgres execution failed: {exc}") from exc
-

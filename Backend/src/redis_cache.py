@@ -90,6 +90,43 @@ def _ttl_seconds() -> int:
         return 900
 
 
+def context_ttl_seconds() -> int:
+    """Small TTL for Redis-backed conversation context: default 5 minutes."""
+    raw = os.getenv("CONVERSATION_CONTEXT_TTL_SECONDS") or os.getenv("REDIS_CONTEXT_TTL_SECONDS") or "300"
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 300
+
+
+def get_session_context(session_id: str) -> list[dict[str, Any]]:
+    """Load a JSON conversation history list for a session, if present."""
+    client = _client()
+    if client is None or not session_id:
+        return []
+    raw = _redis_get_raw(client, f"context:{session_id}")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def set_session_context(session_id: str, history: list[dict[str, Any]]) -> None:
+    """Persist session context as JSON with a 5-minute default TTL."""
+    client = _client()
+    if client is None or not session_id:
+        return
+    _redis_setex_raw(
+        client,
+        f"context:{session_id}",
+        context_ttl_seconds(),
+        json.dumps(history, ensure_ascii=True),
+    )
+
+
 def redis_qa_cache_status() -> dict[str, Any]:
     """
     Connectivity + config for observability (e.g. GET /health?full=1).

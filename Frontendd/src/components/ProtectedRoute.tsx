@@ -5,73 +5,57 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 
 export const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
+    if (isLoading) return;
     if (!isAuthenticated) {
       // Store the intended destination
       sessionStorage.setItem('redirectAfterLogin', pathname);
-      router.push('/login');
+      router.replace('/login');
+      const fallback = window.setTimeout(() => {
+        if (window.location.pathname !== '/login') {
+          window.location.assign('/login');
+        }
+      }, 900);
+      return () => window.clearTimeout(fallback);
     }
-  }, [isAuthenticated, router, pathname]);
+  }, [isAuthenticated, isLoading, router, pathname]);
 
-  // Show loading screen while redirecting
-  if (!isAuthenticated) {
-    return (
-      <div
-        className="h-full bg-white flex items-center justify-center bg-repeat"
-        style={{
-          backgroundImage: 'url(/Images/BackgroundImage.png)',
-          backgroundSize: 'auto',
-          backgroundPosition: '0 0',
-        }}
-      >
-        <div className="bg-white rounded-2xl shadow-2xl p-12 border border-gray-100 text-center max-w-md">
-          <div className="flex flex-col items-center space-y-4">
-            {/* Spinner */}
-            <svg
-              className="animate-spin h-12 w-12 text-primary"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              ></circle>
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              ></path>
-            </svg>
-            
-            {/* Text */}
-            <h2
-              className="text-2xl font-bold bg-clip-text text-transparent"
-              style={{
-                background: 'linear-gradient(180deg, #001e96 0%, #001e96 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-              }}
-            >
-              Redirecting to Login
-            </h2>
-            <p className="text-black text-sm">
-              Please wait while we redirect you to the login page...
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+  if (!isAuthenticated && !isLoading) {
+    // Redirect is already handled by the useEffect above.
+    // Avoid a synchronous window.location.replace here — it triggers an extra
+    // session check (and a visible 401/flash) before the effect-based redirect fires.
+    return null;
   }
 
-  return <>{children}</>;
+  return (
+    <div className="relative h-full w-full">
+      {/* 
+        Always render children in this exact wrapper to prevent React from 
+        unmounting/remounting the tree when loading state changes. 
+      */}
+      <div 
+        style={{ 
+          visibility: isLoading ? 'hidden' : 'visible',
+          height: '100%',
+          width: '100%',
+          ...(isLoading ? { position: 'absolute', inset: 0, pointerEvents: 'none' } : {})
+        }}
+      >
+        {children}
+      </div>
+
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white z-50">
+          <div className="flex flex-col items-center gap-3">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#0b5fa5] border-t-transparent" />
+            <p className="text-sm text-gray-500">Loading...</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };

@@ -13,6 +13,7 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ isCollapsed = false, onToggleCollapse }) => {
   const [search, setSearch] = useState('');
+  // Initialize empty to avoid SSR/client hydration mismatch (localStorage only exists in browser)
   const [chats, setChats] = useState<Chat[]>([]);
   const router = useRouter();
   const pathname = usePathname();
@@ -22,6 +23,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isCollapsed = false, onToggleCollapse
   }, []);
 
   useEffect(() => {
+    // Load chats on mount (client-only)
     refreshChats();
     const onUpdate = () => refreshChats();
     window.addEventListener('recentChatsUpdated', onUpdate);

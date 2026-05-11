@@ -6,6 +6,15 @@ import os
 from pathlib import Path
 
 
+def _force_override_enabled() -> bool:
+    return (os.getenv("SDA_DOTENV_FORCE_OVERRIDE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _parse_dotenv_file(path: Path) -> dict[str, str]:
     """Read KEY=VALUE lines; utf-8-sig strips BOM. Values are stripped, not unescaped."""
     out: dict[str, str] = {}
@@ -32,6 +41,8 @@ def force_apply_azure_openai_from_dotenv() -> None:
     For each known alias, if the file defines a non-empty value, sets both common spellings
     in ``os.environ`` so Windows case-insensitive lookups resolve correctly.
     """
+    if not _force_override_enabled():
+        return
     # Prefer src/.env first so it wins over a sparse or stale repo-root .env (which
     # could set PGHOST etc. and prevent later files from filling missing PGPASSWORD).
     here = Path(__file__).resolve().parent
@@ -78,6 +89,8 @@ def force_apply_redis_from_dotenv() -> None:
     in User/System env (Windows) can block ``src/.env`` from turning Redis on. This
     applies Redis settings from ``src/.env`` first, then parent ``.env``, then ``cwd/.env``.
     """
+    if not _force_override_enabled():
+        return
     here = Path(__file__).resolve().parent
     redis_keys = (
         "REDIS_ENABLED",
@@ -113,7 +126,7 @@ def force_apply_redis_from_dotenv() -> None:
 
 
 def force_apply() -> None:
-    """Apply selected ``.env`` keys that should override process environment (CLI entrypoints)."""
+    """Apply selected ``.env`` keys that should override process environment."""
     force_apply_azure_openai_from_dotenv()
     force_apply_redis_from_dotenv()
 

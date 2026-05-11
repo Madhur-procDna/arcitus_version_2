@@ -26,11 +26,35 @@ from redis_config import make_redis_client
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _CTX_KEY   = "sda:context:turns"   # Redis list — most-recent first
-_MAX_TURNS = 8                      # default turns kept (multi-turn follow-ups)
+MAX_CONTEXT_TURNS = 3
+_MAX_TURNS = MAX_CONTEXT_TURNS      # keep last 3 Q&A pairs for follow-ups
 _CTX_TTL   = 7200                  # 2-hour session window — supports longer 3+ turn chats
 # Must match qa_pipeline anchor budget — truncating mid-SQL breaks follow-ups (e.g. "by region").
+_CTX_TTL = int(os.getenv("CONVERSATION_CONTEXT_TTL_SECONDS", "300"))
 _MAX_STORED_SQL_CHARS = int(os.getenv("CONVERSATION_MAX_SQL_CHARS", "12000"))
 _MAX_STORED_ANSWER_CHARS = int(os.getenv("CONVERSATION_MAX_ANSWER_CHARS", "4000"))
+
+
+def update_context(
+    session_id: str,
+    user_msg: str,
+    assistant_msg: str,
+    context_store: dict[str, list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    """Maintain a rolling 3-turn (6-message) in-memory context window."""
+    history = list(context_store.get(session_id, []))
+    history.append({"role": "user", "content": user_msg})
+    history.append({"role": "assistant", "content": assistant_msg})
+    context_store[session_id] = history[-(MAX_CONTEXT_TURNS * 2):]
+    return context_store[session_id]
+
+
+def get_context(
+    session_id: str,
+    context_store: dict[str, list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    """Return the rolling context messages for a session."""
+    return list(context_store.get(session_id, []))
 
 
 # ── Metric / period / entity extractors ──────────────────────────────────────
@@ -237,7 +261,7 @@ class ConversationBuffer:
             except ValueError:
                 max_turns = _MAX_TURNS
 
-        self._max  = max(1, min(24, max_turns))
+        self._max  = max(1, min(MAX_CONTEXT_TURNS, max_turns))
         self._turns: deque[ConversationTurn] = deque(maxlen=self._max)
         self._ctx  = ConversationContext(
             max_turns=self._max,
@@ -338,6 +362,22 @@ class ConversationBuffer:
         """Wipe all context — both in-memory and Redis."""
         self._turns.clear()
         self._ctx.clear()
+
+    def store_last_result(self, result: dict) -> None:
+        """Store the last query result payload for presentation follow-ups."""
+        self._last_result = result
+
+    def get_last_result(self) -> dict:
+        """Retrieve the last query result payload."""
+        return getattr(self, "_last_result", {})
+
+    def store_last_question(self, question: str) -> None:
+        """Store the original user question (pre-injection) for follow-up rewriting."""
+        self._last_question = question
+
+    def get_last_question(self) -> str:
+        """Retrieve the last original user question."""
+        return getattr(self, "_last_question", "")
 
     def sync_from_redis(self) -> None:
         """Reload the in-memory deque from Redis (multi-worker / reconnect safety).

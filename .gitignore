@@ -8,5 +8,6 @@
 **/.next/
 **/dist/
 **/build/
+.pycache_tmp/
 **/.DS_Store
 **/Thumbs.db

@@ -366,7 +366,6 @@ def retrieval_context_for_nl_question(question: str) -> str:
 def rebuild_schema_rag_index_cli() -> None:
     """CLI entry: ``python -c \"from schema_rag import rebuild_schema_rag_index_cli; rebuild_schema_rag_index_cli()\"``"""
     ensure_schema_rag_index(force=True)
-    print("schema_rag index rebuilt:", _index_path())
 
 
 if __name__ == "__main__":
@@ -374,5 +373,3 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] in ("rebuild", "--rebuild", "-f", "force"):
         rebuild_schema_rag_index_cli()
-    else:
-        print("Usage: python schema_rag.py rebuild")

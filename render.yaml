@@ -1,49 +1,72 @@
 services:
+  # ── Python / FastAPI backend ───────────────────────────────────────────────
   - type: web
     name: arcutis-backend
     runtime: python
-    plan: free
+    plan: free          # upgrade to "starter" ($7/mo) to eliminate cold starts
     rootDir: Backend/src
     buildCommand: pip install -r ../requirements.txt
     startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT --workers 2
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: "3.11.9"
+
+      # ── Data source ──────────────────────────────────────────────────────
       - key: SDA_DATA_SOURCE
         value: postgres
       - key: QUERY_ROW_LIMIT
         value: "500"
       - key: POSTGRES_MAX_ROWS
         value: "500"
+
+      # ── Redis cache ──────────────────────────────────────────────────────
       - key: REDIS_ENABLED
-        value: "false"
+        value: "true"
+      - key: REDIS_TTL_SECONDS
+        value: "86400"           # 24 hours — data is static, long TTL is safe
+      - key: CONVERSATION_CONTEXT_TTL_SECONDS
+        value: "1800"            # 30 min session window
+      - key: REDIS_URL
+        fromService:
+          name: arcutis-redis
+          type: redis
+          property: connectionString
+
+      # ── CORS — set to your deployed frontend URL in Render dashboard ─────
+      # Example: https://arcutis-frontend.onrender.com
+      - key: CORS_ALLOW_ORIGINS
+        sync: false
+
+      # ── Azure OpenAI (fill in Render dashboard) ──────────────────────────
       - key: AZURE_OPENAI_API_VERSION
-        value: 2025-01-01-preview
+        value: "2025-01-01-preview"
+      - key: api_version
+        value: "2025-01-01-preview"
       - key: AZURE_OPENAI_KEY
         sync: false
       - key: AZURE_OPENAI_API_KEY
         sync: false
       - key: AZURE_OPENAI_ENDPOINT
         sync: false
-      - key: AZURE_OPENAI_CHAT_DEPLOYMENT
-        sync: false
-      - key: AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT
-        sync: false
-      - key: azure_openai_key
-        sync: false
       - key: azure_openai_endpoint
+        sync: false
+      - key: AZURE_OPENAI_CHAT_DEPLOYMENT
         sync: false
       - key: chat_deployment
         sync: false
+      - key: AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT
+        sync: false
       - key: embeddings_deployment
         sync: false
-      - key: api_version
-        value: 2025-01-01-preview
+
+      # ── OpenAI direct (alternative to Azure — fill one or the other) ─────
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_ADMIN_KEY
         sync: false
+
+      # ── PostgreSQL (fill in Render dashboard) ────────────────────────────
       - key: PGHOST
         sync: false
       - key: PGPORT
@@ -57,6 +80,11 @@ services:
       - key: PGSCHEMA
         value: public
 
+      # ── Security ─────────────────────────────────────────────────────────
+      - key: SDA_BACKEND_API_KEY
+        sync: false
+
+  # ── Next.js frontend ──────────────────────────────────────────────────────
   - type: web
     name: arcutis-frontend
     runtime: node
@@ -66,8 +94,47 @@ services:
     startCommand: npm run start
     envVars:
       - key: NODE_VERSION
-        value: 20.19.0
+        value: "20.19.0"
+      # Backend URL — set to https://arcutis-backend.onrender.com in Render dashboard
       - key: SDA_BACKEND_URL
         sync: false
       - key: NEXT_PUBLIC_SERVER_URL
         sync: false
+      - key: SDA_BACKEND_API_KEY
+        sync: false
+      - key: SDA_AUTH_USERNAME
+        sync: false
+      - key: SDA_AUTH_PASSWORD
+        sync: false
+      - key: SDA_AUTH_SECRET
+        sync: false
+      # Raise frontend proxy timeout to match long LLM queries (10 min)
+      - key: SDA_QUERY_PROXY_TIMEOUT_MS
+        value: "600000"
+
+  # ── Redis (free 25 MB tier — sufficient for QA cache + session context) ───
+  - type: redis
+    name: arcutis-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru   # evict least-recently-used when RAM fills up
+
+  # ── Keep-alive cron — pings backend every 10 min to prevent free-tier sleep
+  - type: cron
+    name: arcutis-keepalive
+    runtime: python
+    plan: free
+    schedule: "*/10 * * * *"
+    buildCommand: ""
+    startCommand: >
+      python -c "
+      import urllib.request, os, sys;
+      url = os.environ.get('BACKEND_URL','').rstrip('/') + '/ready';
+      try:
+        r = urllib.request.urlopen(url, timeout=10);
+        print('ping ok:', r.status)
+      except Exception as e:
+        print('ping failed:', e); sys.exit(1)
+      "
+    envVars:
+      - key: BACKEND_URL
+        sync: false   # set to https://arcutis-backend.onrender.com

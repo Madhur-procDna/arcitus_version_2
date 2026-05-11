@@ -18,6 +18,84 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Flat ``arcutis_data`` full-window TRx (Jan 2025–Mar 2026): ZORYVE + Other BNST only.
+# TCS columns are a subset of Other BNST — never add ``tcs_*`` on top of ``other_bnst_*``.
+# Use column names that match the live ERD (underscore before month vs ``jan25`` style).
+FULL_DATASET_TOTAL_TRX_SQL = """(
+    COALESCE(zoryve_jan_25,0)+COALESCE(zoryve_feb_25,0)+COALESCE(zoryve_mar_25,0)
+    +COALESCE(zoryve_apr_25,0)+COALESCE(zoryve_may_25,0)+COALESCE(zoryve_jun_25,0)
+    +COALESCE(zoryve_jul_25,0)+COALESCE(zoryve_aug_25,0)+COALESCE(zoryve_sep_25,0)
+    +COALESCE(zoryve_oct_25,0)+COALESCE(zoryve_nov_25,0)+COALESCE(zoryve_dec_25,0)
+    +COALESCE(zoryve_jan_26,0)+COALESCE(zoryve_feb_26,0)+COALESCE(zoryve_mar_26,0)
+    +COALESCE(other_bnst_jan_25,0)+COALESCE(other_bnst_feb_25,0)+COALESCE(other_bnst_mar_25,0)
+    +COALESCE(other_bnst_apr_25,0)+COALESCE(other_bnst_may_25,0)+COALESCE(other_bnst_jun_25,0)
+    +COALESCE(other_bnst_jul_25,0)+COALESCE(other_bnst_aug_25,0)+COALESCE(other_bnst_sep_25,0)
+    +COALESCE(other_bnst_oct_25,0)+COALESCE(other_bnst_nov_25,0)+COALESCE(other_bnst_dec_25,0)
+    +COALESCE(other_bnst_jan_26,0)+COALESCE(other_bnst_feb_26,0)+COALESCE(other_bnst_mar_26,0)
+) AS total_trx"""
+
+Q1_2026_ONLY_TRX_SQL = """(
+    COALESCE(zoryve_jan_26,0)+COALESCE(zoryve_feb_26,0)+COALESCE(zoryve_mar_26,0)
+    +COALESCE(other_bnst_jan_26,0)+COALESCE(other_bnst_feb_26,0)+COALESCE(other_bnst_mar_26,0)
+) AS total_trx"""
+
+
+# Fix 3: call-response metrics must align TRx to the call-observable period only
+# (Q2 2025-Q1 2026 = Apr 2025-Mar 2026). Jan-Mar 2025 predates available calls.
+CALL_ALIGNED_ZORYVE_MONTH_COLS: tuple[str, ...] = (
+    "zoryve_apr_25", "zoryve_may_25", "zoryve_jun_25",
+    "zoryve_jul_25", "zoryve_aug_25", "zoryve_sep_25",
+    "zoryve_oct_25", "zoryve_nov_25", "zoryve_dec_25",
+    "zoryve_jan_26", "zoryve_feb_26", "zoryve_mar_26",
+)
+CALL_PERIOD_CALL_COLS: tuple[str, ...] = (
+    "q2_25_calls", "q3_25_calls", "q4_25_calls", "q1_26_calls",
+)
+CALL_ALIGNED_MONTH_COUNT = 12.0
+
+
+def _coalesce_sum(cols: tuple[str, ...]) -> str:
+    return "+".join(f"COALESCE({col},0)" for col in cols)
+
+
+CALL_ALIGNED_ZORYVE_TRX_EXPR = _coalesce_sum(CALL_ALIGNED_ZORYVE_MONTH_COLS)
+CALL_PERIOD_TOTAL_CALLS_EXPR = _coalesce_sum(CALL_PERIOD_CALL_COLS)
+
+# Fix 1: average monthly ZORYVE response is per HCP per month, not bucket total / months.
+AVG_MONTHLY_ZORYVE_TRX_PER_HCP_SQL = f"""ROUND(
+    SUM({CALL_ALIGNED_ZORYVE_TRX_EXPR})
+    / NULLIF(COUNT(npi_id), 0)
+    / {CALL_ALIGNED_MONTH_COUNT},
+    2
+) AS avg_monthly_zoryve_trx_per_hcp"""
+
+# Fix 2: inadequate response is strictly the 4-6 call bucket; 7+ calls are excluded.
+INADEQUATE_RESPONSE_HCPS_SQL = f"""COUNT(*) FILTER (
+    WHERE ({CALL_PERIOD_TOTAL_CALLS_EXPR}) BETWEEN 4 AND 6
+      AND (({CALL_ALIGNED_ZORYVE_TRX_EXPR}) / {CALL_ALIGNED_MONTH_COUNT}) < 5
+) AS inadequate_response_hcps"""
+
+# Fix 4/5: TCS is intentionally absent from both fragments because TCS is inside Other BNST,
+# and total TRx formulas are always ZORYVE + Other BNST only.
+
+
+# Territory mapping hints for prompts (Mountain vs Midwest).
+MOUNTAIN_REGION_STATES: frozenset[str] = frozenset(
+    {"AZ", "CO", "ID", "MT", "NM", "NV", "UT", "WY"}
+)
+MIDWEST_NOT_MOUNTAIN_STATES: frozenset[str] = frozenset({"KS", "MO", "IA"})
+
+
+def arcutis_geography_territory_prompt_block() -> str:
+    """Mountain region valid states only; KS, MO, IA are Midwest-only (never Mountain)."""
+    mtn = ", ".join(sorted(MOUNTAIN_REGION_STATES))
+    mid = ", ".join(sorted(MIDWEST_NOT_MOUNTAIN_STATES))
+    return (
+        "**Geography — Mountain vs Midwest**\n"
+        f"- **`region = 'Mountain'` — valid `state` values ONLY:** `{mtn}` (2-letter).\n"
+        f"- **`{mid}` are Midwest-only** — NEVER include them in a Mountain `WHERE state IN (...)` filter.\n"
+    )
+
 
 def use_sqlite_backend() -> bool:
     """True when the app should use ``data_loader`` instead of ``postgres_runner``."""
@@ -133,9 +211,29 @@ def live_table_names_prompt_text(
     max_list_items: int = 260,
     max_chars: int = 14000,
 ) -> Optional[str]:
+    geo = arcutis_geography_territory_prompt_block().rstrip()
+    try:
+        from pharma_schema import arcutis_metric_calculation_guardrails_block
+
+        # Query-generation guardrail: keep call-response formulas next to live columns.
+        metric_guardrails = arcutis_metric_calculation_guardrails_block().rstrip()
+    except Exception:
+        metric_guardrails = ""
+    prefix = "\n\n".join(x for x in (geo, metric_guardrails) if x)
+
+    def _prepend_geo(fragment: Optional[str]) -> Optional[str]:
+        if not fragment:
+            return prefix if prefix else None
+        if not prefix:
+            return fragment
+        combined = prefix + "\n\n" + fragment
+        return combined[:max_chars] + ("\n… [truncated]" if len(combined) > max_chars else "")
+
     if not use_sqlite_backend():
-        return _pg_live_table_names_prompt_text(
-            max_list_items=max_list_items, max_chars=max_chars
+        return _prepend_geo(
+            _pg_live_table_names_prompt_text(
+                max_list_items=max_list_items, max_chars=max_chars,
+            ),
         )
     if (os.getenv("SDA_LIVE_TABLE_NAMES") or "").strip().lower() in (
         "0",
@@ -143,12 +241,12 @@ def live_table_names_prompt_text(
         "no",
         "off",
     ):
-        return None
+        return prefix if prefix else None
     from data_loader import get_db
 
     db = get_db()
     if not db or not db.tables:
-        return None
+        return prefix if prefix else None
 
     lines: List[str] = []
     for tname in sorted(db.tables.keys()):
@@ -171,6 +269,7 @@ def live_table_names_prompt_text(
     )
     body = "\n".join(lines)
     text = header + body
+    text = prefix + "\n\n" + text if prefix else text
     if len(text) > max_chars:
         text = text[:max_chars] + "\n… [truncated]"
     return text

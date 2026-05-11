@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -70,6 +70,58 @@ _db_state: Optional[DatabaseState] = None
 
 # Cache: ``f"{file_path}|{loaded_at}"`` → DISTINCT-hint markdown (invalidated on each load).
 _LIVE_HINTS_CACHE: dict[str, str] = {}
+
+# CREATE INDEX IF NOT EXISTS … on flat Arcutis sheet loaded as ``arcutis_data`` (SQLite).
+_ARCUTIS_SQLITE_INDEX_SPECS: Tuple[Tuple[str, str], ...] = (
+    ("idx_arcutis_area", "area"),
+    ("idx_arcutis_state", "state"),
+    ("idx_arcutis_region", "region"),
+    ("idx_arcutis_target_flag", "q1_26_target_flag"),
+    ("idx_arcutis_decile", "q1_26_decile"),
+    ("idx_arcutis_specialty", "primary_specialty"),
+    ("idx_arcutis_npi", "npi_id"),
+)
+
+
+def _configure_sqlite_performance(con: sqlite3.Connection) -> None:
+    """Tune SQLite for analytical workloads (best-effort; ignored if unsupported)."""
+    pragmas = (
+        "PRAGMA journal_mode=WAL",
+        "PRAGMA cache_size=-64000",  # ~64MB page cache (negative = KiB units)
+        "PRAGMA synchronous=NORMAL",
+        "PRAGMA temp_store=MEMORY",
+    )
+    for pragma in pragmas:
+        try:
+            con.execute(pragma)
+        except sqlite3.Error as exc:
+            logger.debug("SQLite pragma skipped (%s): %s", pragma.split()[1], exc)
+
+
+def _ensure_arcutis_data_indexes_sqlite(
+    con: sqlite3.Connection, tables: dict[str, TableMeta]
+) -> None:
+    """Create filter indexes on ``arcutis_data`` when that table exists with the columns."""
+    tname = next((k for k in tables if k.lower() == "arcutis_data"), None)
+    if not tname:
+        return
+    meta = tables[tname]
+    col_by_lower = {c.name.lower(): c.name for c in meta.columns}
+    tq = _sqlite_quote_ident(tname)
+    created = 0
+    for idx_name, col_logical in _ARCUTIS_SQLITE_INDEX_SPECS:
+        actual = col_by_lower.get(col_logical.lower())
+        if not actual:
+            continue
+        cq = _sqlite_quote_ident(actual)
+        ddl = f"CREATE INDEX IF NOT EXISTS {_sqlite_quote_ident(idx_name)} ON {tq} ({cq})"
+        try:
+            con.execute(ddl)
+            created += 1
+        except sqlite3.Error as exc:
+            logger.warning("SQLite index %s on %s.%s failed: %s", idx_name, tname, actual, exc)
+    if created:
+        logger.info("SQLite: ensured %d indexes on %s", created, tname)
 
 
 def _sqlite_quote_ident(ident: str) -> str:
@@ -212,6 +264,7 @@ def _load_file_impl(path: Path) -> DatabaseState:
         raise ValueError("The file contains no sheets / data.")
 
     con = sqlite3.connect(":memory:", check_same_thread=False)
+    _configure_sqlite_performance(con)
     tables: dict[str, TableMeta] = {}
 
     for sheet_name, df in sheet_map.items():
@@ -233,6 +286,17 @@ def _load_file_impl(path: Path) -> DatabaseState:
                 pass
 
         table_name = _safe_table_name(sheet_name)
+
+        tcs_cols = [c for c in df.columns if str(c).lower().startswith("tcs_")]
+        for tcs_col in tcs_cols:
+            bnst_col = str(tcs_col).lower().replace("tcs_", "other_bnst_", 1)
+            # Find actual bnst column name matching case-insensitively
+            actual_bnst_col = next((c for c in df.columns if str(c).lower() == bnst_col), None)
+            if actual_bnst_col:
+                tcs_vals = pd.to_numeric(df[tcs_col], errors="coerce").fillna(0)
+                bnst_vals = pd.to_numeric(df[actual_bnst_col], errors="coerce").fillna(0)
+                if not (tcs_vals <= bnst_vals).all():
+                    raise ValueError(f"Data mapping error in ETL pipeline: {tcs_col} values exceed {actual_bnst_col}")
 
         # Write to SQLite
         df.to_sql(table_name, con, if_exists="replace", index=False)
@@ -257,6 +321,8 @@ def _load_file_impl(path: Path) -> DatabaseState:
 
     if not tables:
         raise ValueError("No usable data found in the file (all sheets were empty).")
+
+    _ensure_arcutis_data_indexes_sqlite(con, tables)
 
     _db_state = DatabaseState(
         con=con,

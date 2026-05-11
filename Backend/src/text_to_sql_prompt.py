@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +31,7 @@ MAX_ERD_CHARS = int(os.getenv("TEXT2SQL_MAX_ERD_CHARS", "250000"))
 # Default LIMIT clause the model is asked to add when the pipeline does not want unlimited rows.
 TEXT2SQL_LLM_LIMIT_HINT = int(os.getenv("TEXT2SQL_LLM_LIMIT_HINT", "200"))
 # Default ERD next to this package (`src/ERD.md`). Override per-call or via `pharma_schema.erd_markdown_path()`.
-ERD_PATH_DEFAULT = Path(__file__).resolve().parent / "ERD.md"
+ERD_PATH_DEFAULT = Path(__file__).resolve().parent / "arcutis_erd_md.md"
 
 _ROLE_INJECTION_RE = re.compile(
     r"(?im)^\s*(system|assistant|user)\s*:\s*|\[\s*INST\s*\]|<\|im_start\|>",
@@ -75,7 +74,6 @@ def _cap(text: Optional[str], max_chars: int, label: str) -> Optional[str]:
     if text is None:
         return None
     if len(text) > max_chars:
-        print(f"[PromptBuilder] WARNING: {label} truncated.", file=sys.stderr)
         return text[:max_chars] + "\n... [truncated]"
     return text
 
@@ -136,8 +134,6 @@ PREVIOUS SQL CONTEXT:
         '"top N", "first N", "which N", or "show 20 ..." -- use ORDER BY (and window functions if needed) so the database '
         "returns the full ordered result set (the app controls preview length and CSV download). Only add a row cap when "
         'the user clearly asks for a SQL-level cap for sampling (e.g. "random 5 rows").'
-        if max_rows is None
-        else f"- Add LIMIT {max_rows} unless the user explicitly asks for all rows or a different limit."
     )
 
     sda_playbook = f"""
@@ -201,7 +197,7 @@ Follow these rules:
 - For planned vs actual call comparisons (when both tables are in context):
   - Planned = **`call_plan.planned_visits`** by rep, HCP, year, quarter.
   - Actual = counts from **`rep_activity`** grouped to the same rep–HCP–quarter using **`activity_date`**.
-- Do NOT add a LIMIT clause unless the user explicitly asks for a limit/top/bottom N.
+- IMPORTANT: Never add LIMIT to SQL unless user says top N, give me N, or limit to N. If user says show all or asks generally, write SQL with NO LIMIT clause.
 - Null handling rules:
   - For aggregations (SUM, AVG), use COALESCE(column, 0) unless the metric is not additive.
   - For top/bottom rankings, exclude rows where the ranking metric is NULL.
@@ -346,7 +342,7 @@ Execution checklist:
 9. For **email / call** metrics by geography, use **`rep_activity`** with **`activity_type`** and join **`hcp` → `region`** (or **`sales_rep` → `region`**) unless ERD_CONTEXT documents other columns.
 10. For **planned vs actual** calls, join **`call_plan`** to **`rep_activity`** on **sales_rep_id**, **hcp_id**, and **year/quarter** from **`activity_date`** vs **plan_year** / **plan_quarter** when both appear in ERD_CONTEXT.
 11. If the schema does not support the request, emit the -- ERROR marker.
-12. For ranking / \"top N\" / \"which N\" questions, prefer **no** trailing row **`LIMIT`** — order correctly and return all ranked rows, not only N.
+12. IMPORTANT: Never add LIMIT to SQL unless user says top N, give me N, or limit to N. If user says show all or asks generally, write SQL with NO LIMIT clause.
 13. When **both** **`{h_table}`** and **`{r_table}`** are required, aggregate each at **rep × HCP × year × quarter** in CTEs, then join on **sales_rep_id**, **hcp_id**, **plan_year** / **plan_quarter** vs **`EXTRACT` from `activity_date`**; for **% of plan**, **LEFT JOIN** plan CTE to activity CTE (not the reverse).
 14. **CTEs and outer SELECT:** The final `SELECT` must `FROM` / `JOIN` every CTE (or subquery) whose columns it references, using a stable alias. Example: `WITH t AS (…) SELECT t.id FROM t` — not `SELECT t.id FROM other_table` unless `t` is joined. Same rule for Synthea double-quoted columns.
 
@@ -373,8 +369,6 @@ def _build_workbook_sqlite_prompt(
         '"top N", "first N", "which N", or "show 20 ..." — use ORDER BY (and window functions if needed) so the database '
         "returns the full ordered result set (the app controls preview length). Only add a row cap when "
         'the user clearly asks for a SQL-level cap for sampling (e.g. "random 5 rows").'
-        if max_rows is None
-        else f"- Add LIMIT {max_rows} unless the user explicitly asks for all rows or a different limit."
     )
     anchor_block = ""
     if anchor_sql and anchor_sql.strip():
@@ -460,8 +454,6 @@ def build_geography_rewrite_prompt(
 ) -> PromptParts:
     limit_instruction = (
         "- Do **not** add a trailing LIMIT / FETCH unless the user explicitly asked for a capped sample; preserve the prior query's row shape when possible."
-        if max_rows is None
-        else f"- Add LIMIT {max_rows} only if the rewritten query needs a row cap and none exists already."
     )
     system = f"""You rewrite one PostgreSQL query for a follow-up request.
 
@@ -547,7 +539,7 @@ def build_intent_classification_prompt(user_query: str, *, workbook_sqlite_mode:
         return f"""Analyze the user's input and classify it into one of two categories:
 1. DATA_QUERY: The user wants information from the **loaded spreadsheet / SQLite** data — counts, lists, filters, joins, rankings, trends, or any question about sheet/table names and columns that could be answered with SQL over the current file.
 
-   **Always DATA_QUERY** (not CHAT) when the message asks about **any** of: **ZORYVE** TRx, **TCS** / total class, **Other BNST** / competitor volume, **call frequency** / calls, **target flag** / targeting, **decile**, **region** / territory / area, **HCP** prescribers, **ZORYVE share**, **trend** / growth / MoM / QoQ, **switch opportunities**.
+   **Always DATA_QUERY** (not CHAT) when the message asks about **any** of: prescriptions / TRx / NRx / scripts (any brand), **TCS** / total class, **ZORYVE** TRx, **Other BNST** / competitor volume, **call frequency** / calls, **target flag** / targeting, **decile**, **region** / territory / area, **HCP** / **HCO** prescribers, **specialty** mix, **ZORYVE share**, **trend** / growth / MoM / QoQ / YoY, **switch opportunities**, market share, brand volume, segment performance.
 
 2. CHAT: Only brief social or assistant messages such as hello, thanks, goodbye, help, who are you, or what can you do, with no request for data from the file.
 
@@ -594,4 +586,3 @@ if __name__ == "__main__":
             output_format=args.format,
             max_rows=max_rows,
         )
-        print(f"\nSYSTEM:\n{prompt.system}\n\nUSER:\n{prompt.user}")

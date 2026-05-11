@@ -10,17 +10,20 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignIn = async () => {
+    if (isLoading) return;
     setError('');
     setIsLoading(true);
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    const success = login(username, password);
-    
-    if (!success) {
-      setError('Invalid username or password');
+    try {
+      const success = await login(username, password);
+      if (!success) {
+        setError('Invalid username or password');
+      } else {
+        window.location.assign('/');
+      }
+    } catch {
+      setError('Unable to sign in right now. Please try again.');
+    } finally {
       setIsLoading(false);
     }
   };
@@ -57,7 +60,13 @@ export default function LoginPage() {
           </div>
 
           {/* Login Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form
+            className="space-y-6"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleSignIn();
+            }}
+          >
             {/* Username Field */}
             <div>
               <label htmlFor="username" className="block text-sm font-medium text-black mb-2">
@@ -135,10 +144,9 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Helper Text */}
           <div className="mt-6 text-center">
             <p className="text-xs text-black">
-              Demo Credentials: <span className="font-semibold">admin</span> / <span className="font-semibold">admin123</span>
+              Credentials are validated server-side.
             </p>
           </div>
         </div>
