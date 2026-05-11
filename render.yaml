@@ -116,13 +116,15 @@ services:
   - type: redis
     name: arcutis-redis
     plan: free
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: Allow Render services and setup access
     maxmemoryPolicy: allkeys-lru   # evict least-recently-used when RAM fills up
 
   # ── Keep-alive cron — pings backend every 10 min to prevent free-tier sleep
   - type: cron
     name: arcutis-keepalive
     runtime: python
-    plan: free
     schedule: "*/10 * * * *"
     buildCommand: ""
     startCommand: >
