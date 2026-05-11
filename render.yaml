@@ -20,18 +20,9 @@ services:
       - key: POSTGRES_MAX_ROWS
         value: "500"
 
-      # ── Redis cache ──────────────────────────────────────────────────────
+      # ── Redis cache (disabled for free-tier Blueprint deployment) ───────
       - key: REDIS_ENABLED
-        value: "true"
-      - key: REDIS_TTL_SECONDS
-        value: "86400"           # 24 hours — data is static, long TTL is safe
-      - key: CONVERSATION_CONTEXT_TTL_SECONDS
-        value: "1800"            # 30 min session window
-      - key: REDIS_URL
-        fromService:
-          name: arcutis-redis
-          type: redis
-          property: connectionString
+        value: "false"
 
       # ── CORS — set to your deployed frontend URL in Render dashboard ─────
       # Example: https://arcutis-frontend.onrender.com
@@ -112,31 +103,3 @@ services:
       - key: SDA_QUERY_PROXY_TIMEOUT_MS
         value: "600000"
 
-  # ── Redis (free 25 MB tier — sufficient for QA cache + session context) ───
-  - type: redis
-    name: arcutis-redis
-    plan: free
-    ipAllowList:
-      - source: 0.0.0.0/0
-        description: Allow Render services and setup access
-    maxmemoryPolicy: allkeys-lru   # evict least-recently-used when RAM fills up
-
-  # ── Keep-alive cron — pings backend every 10 min to prevent free-tier sleep
-  - type: cron
-    name: arcutis-keepalive
-    runtime: python
-    schedule: "*/10 * * * *"
-    buildCommand: ""
-    startCommand: >
-      python -c "
-      import urllib.request, os, sys;
-      url = os.environ.get('BACKEND_URL','').rstrip('/') + '/ready';
-      try:
-        r = urllib.request.urlopen(url, timeout=10);
-        print('ping ok:', r.status)
-      except Exception as e:
-        print('ping failed:', e); sys.exit(1)
-      "
-    envVars:
-      - key: BACKEND_URL
-        sync: false   # set to https://arcutis-backend.onrender.com
