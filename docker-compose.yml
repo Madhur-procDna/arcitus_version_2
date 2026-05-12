@@ -1,0 +1,89 @@
+# ══════════════════════════════════════════════════════════════
+# Compass.auxo — Docker Compose
+# ══════════════════════════════════════════════════════════════
+#
+# Usage:
+#   docker compose up --build
+#
+# Access:
+#   http://localhost        → Arcutis frontend (via Nginx)
+#   http://localhost/api/backend/health  → FastAPI health check
+#
+# ══════════════════════════════════════════════════════════════
+
+services:
+  # ── Next.js frontend (SSR / standalone) ─────────────────────
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+      args:
+        # The backend URL used by Next.js server-side proxy at runtime.
+        # This is the Docker-internal address of the FastAPI container.
+        SDA_BACKEND_URL: http://backend:8001
+    container_name: compass-frontend
+    environment:
+      - NODE_ENV=production
+      - SDA_BACKEND_URL=http://backend:8001
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - compass-net
+    # No ports exposed externally — only accessible through Nginx
+
+    # ── FastAPI backend ─────────────────────────────────────────
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: compass-backend
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - compass-net
+    # No ports exposed externally — only accessible through Docker network
+    # Uncomment the next two lines for direct debugging access:
+    # ports:
+    #   - "8001:8001"
+
+    # ── Nginx reverse proxy ─────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: compass-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_started
+    networks:
+      - compass-net
+    restart: unless-stopped
+
+  # ── Redis (cache + conversation turns) ──────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: compass-redis
+    networks:
+      - compass-net
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    # No ports exposed externally — only accessible through Docker network
+    # Uncomment the next two lines for direct debugging access:
+    # ports:
+    #   - "6379:6379"
+
+    # ── Network ───────────────────────────────────────────────────
+networks:
+  compass-net:
+    driver: bridge

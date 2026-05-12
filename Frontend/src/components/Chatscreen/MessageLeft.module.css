@@ -1,0 +1,188 @@
+/* MessageLeft.module.css */
+.messageMarkdownContent {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  white-space: normal;
+  text-align: left;
+}
+
+.messageMarkdownContent h1,
+.messageMarkdownContent h2,
+.messageMarkdownContent h3,
+.messageMarkdownContent h4,
+.messageMarkdownContent h5,
+.messageMarkdownContent h6 {
+  font-weight: 600;
+  margin: 16px 0 8px 0;
+  color: #1a1a1a;
+}
+
+.messageMarkdownContent h1 {
+  font-size: 1.5em;
+}
+
+.messageMarkdownContent h2 {
+  font-size: 1.25em;
+}
+
+.messageMarkdownContent h3 {
+  font-size: 1.125em;
+}
+
+.messageMarkdownContent h4 {
+  font-size: 1em;
+}
+
+.messageMarkdownContent strong,
+.messageMarkdownContent b {
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.messageMarkdownContent em,
+.messageMarkdownContent i {
+  font-style: italic;
+}
+
+.messageMarkdownContent ul {
+  margin: 10px 0 12px 0;
+  padding-left: 24px;
+  list-style-type: disc;
+}
+
+.messageMarkdownContent ol {
+  margin: 12px 0;
+  padding-left: 24px;
+  list-style-type: decimal;
+}
+
+.messageMarkdownContent li {
+  margin: 4px 0;
+  line-height: 1.5;
+}
+
+.messageMarkdownContent li > p {
+  margin: 4px 0;
+}
+
+.messageMarkdownContent p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+
+.messageMarkdownContent p:first-child {
+  margin-top: 0;
+}
+
+.messageMarkdownContent p:last-child {
+  margin-bottom: 0;
+}
+
+/* Inline identifiers (``table`` / ``column``) — plain body text, semibold; not brand red/pink. */
+.messageMarkdownContent code {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.messageMarkdownContent pre {
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.messageMarkdownContent pre code {
+  background-color: transparent;
+  padding: 0;
+  color: #1f2937;
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+    monospace;
+  font-weight: 400;
+}
+
+.messageMarkdownContent blockquote {
+  border-left: 4px solid #001e96;
+  margin: 12px 0;
+  padding-left: 16px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.messageMarkdownContent table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 0.875em;
+}
+
+.messageMarkdownContent th,
+.messageMarkdownContent td {
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.messageMarkdownContent th {
+  background-color: #f9fafb;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.messageMarkdownContent tr:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+.messageMarkdownContent a {
+  color: #001e96;
+  text-decoration: underline;
+}
+
+.messageMarkdownContent a:hover {
+  color: #001e96;
+}
+
+.messageMarkdownContent hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 16px 0;
+}
+
+.copiedTooltip {
+  position: absolute;
+  top: -30px;
+  left: 0;
+  background-color: #001e96;
+  color: white;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 0.25rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  animation: fadeInOut 1.5s ease-in-out;
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  10% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  90% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+}

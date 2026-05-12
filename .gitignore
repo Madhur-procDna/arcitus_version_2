@@ -1,0 +1,17 @@
+# Secrets and config
+.env
+.env.*
+.env.example
+.env.local.example
+.dockerignore
+
+# Node / Python / OS
+node_modules/
+.next/
+out/
+build/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
