@@ -165,43 +165,57 @@ const ChatSession: React.FC<ChatSessionProps> = ({ chatId }) => {
       sessionStorage.setItem('currentChatMessages', JSON.stringify(payload));
       sessionStorage.setItem('activeChatId', chatId);
     };
+
+    // Level 1: write as-is
     try {
       tryWrite(next);
-    } catch {
-      const slim: Message[] = next.map((m) => {
-        if (m.role !== 'assistant' || !m.meta?.result_table?.rows?.length) return m;
-        const maxRows = 150;
-        const rows = m.meta.result_table.rows;
-        if (rows.length <= maxRows) return m;
-        return {
-          ...m,
-          meta: {
-            ...m.meta,
-            result_table: {
-              ...m.meta.result_table,
-              rows: rows.slice(0, maxRows),
-              truncated_for_storage: true,
+      return;
+    } catch { /* continue to next level */ }
+
+    // Level 2: truncate result_table rows to 150
+    const slim: Message[] = next.map((m) => {
+      if (m.role !== 'assistant' || !m.meta?.result_table?.rows?.length) return m;
+      const rows = m.meta.result_table.rows;
+      if (rows.length <= 150) return m;
+      return {
+        ...m,
+        meta: {
+          ...m.meta,
+          result_table: { ...m.meta.result_table, rows: rows.slice(0, 150), truncated_for_storage: true },
+        },
+      };
+    });
+    try {
+      tryWrite(slim);
+      return;
+    } catch { /* continue to next level */ }
+
+    // Level 3: strip result_table and data_table entirely
+    const noTable: Message[] = slim.map((m) =>
+      m.role === 'assistant' && (m.meta?.result_table || m.meta?.data_table)
+        ? {
+            ...m,
+            meta: {
+              ...m.meta,
+              result_table: undefined,
+              result_table_multipart_last_part: undefined,
+              data_table: undefined,
             },
-          },
-        };
-      });
-      try {
-        tryWrite(slim);
-      } catch {
-        const noTable: Message[] = slim.map((m) =>
-          m.role === 'assistant' && m.meta?.result_table
-            ? {
-                ...m,
-                meta: {
-                  ...m.meta,
-                  result_table: undefined,
-                  result_table_multipart_last_part: undefined,
-                },
-              }
-            : m,
-        );
-        tryWrite(noTable);
-      }
+          }
+        : m,
+    );
+    try {
+      tryWrite(noTable);
+      return;
+    } catch { /* continue to next level */ }
+
+    // Level 4 (last resort): keep only the most recent 20 messages, stripped of all large data
+    const recent = noTable.slice(-20);
+    try {
+      tryWrite(recent);
+    } catch {
+      // Storage is completely full — skip persisting this time rather than crashing
+      console.warn('sessionStorage quota exceeded; chat thread not persisted.');
     }
   }, [chatId]);
 
