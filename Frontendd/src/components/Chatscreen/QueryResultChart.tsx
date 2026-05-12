@@ -48,20 +48,30 @@ export interface ChartRecommendation {
   rationale: string;
 }
 
-/** Arcutis brand color palette — teal/blue primary, muted secondary tones. */
+/** ProcDNA chart color palette (from shared brand swatches). */
 const PALETTE = [
-  '#0b5fa5', // Arcutis blue primary
-  '#0f7ac4', // blue mid
-  '#1a9e8e', // teal
-  '#4aa3df', // light blue
-  '#83c5ed', // sky
-  '#5ab1a5', // muted teal
+  '#005CD9', // Dark Blue
+  '#008CE3', // Mid-tone Blue
+  '#2C8C8C', // Dark Cyan
+  '#D6454A', // Soft Red
+  '#57C785', // Shade of Green
+  '#36A463', // Green
+  '#FF8D1A', // Dark Yellow
 ];
 
 function num(v: unknown): number {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   const parsed = Number(String(v ?? '').replace(/,/g, '').trim());
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '');
+  if (clean.length !== 6) return `rgba(0,0,0,${alpha})`;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 const _MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'] as const;
@@ -253,6 +263,74 @@ function formatYAxisLabel(key: string): string {
     .split('_')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
+}
+
+function titleCaseFromKey(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function looksLikeTotalKey(key: string): boolean {
+  return /^(total|all)_|_total$|overall|grand_total/i.test(key);
+}
+
+function isNumericLikeColumn(rows: Record<string, unknown>[], key: string): boolean {
+  if (!rows.length) return false;
+  let numericCount = 0;
+  let checkedCount = 0;
+  for (const row of rows.slice(0, Math.min(rows.length, 25))) {
+    const value = row[key];
+    if (value == null || value === '') continue;
+    checkedCount++;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      numericCount++;
+    } else {
+      const s = String(value).replace(/,/g, '').trim();
+      const parsed = parseFloat(s);
+      if (!isNaN(parsed) && s.length > 0) numericCount++;
+    }
+  }
+  return checkedCount > 0 && numericCount / checkedCount >= 0.8;
+}
+
+function resolveStackedBarData(
+  rows: Record<string, unknown>[] | null | undefined,
+  chart: ChartPayload,
+  rec?: ChartRecommendation,
+): { labels: string[]; datasets: { label: string; data: number[]; backgroundColor: string }[] } | null {
+  if (!rows || rows.length < 2 || chart.kind !== 'bar') return null;
+  const row0 = rows[0];
+  const keys = Object.keys(row0);
+  if (keys.length < 3) return null;
+
+  const labelKey = rec?.x_axis
+    ? resolveDataColumnKey(row0, rec.x_axis)
+    : (keys.find((k) => !isNumericLikeColumn(rows, k)) ?? keys[0]);
+  if (!labelKey) return null;
+
+  const DEMOGRAPHIC_COLS = /^(city|state|region|area|zip|postal|npi|specialty|target|hco|practice|address|country|territory)/i;
+  const candidateMetrics = keys.filter((k) =>
+    k !== labelKey &&
+    isNumericLikeColumn(rows, k) &&
+    !looksLikeTotalKey(k) &&
+    !DEMOGRAPHIC_COLS.test(k) &&
+    !/id$|_id$|rank|decile|q[1-4]_\d{2}_target/i.test(k),
+  );
+
+  // Use stacked bars only for true multi-series data.
+  if (candidateMetrics.length < 2 || candidateMetrics.length > 8) return null;
+
+  const labels = rows.map((r) => String(r[labelKey] ?? '').trim());
+  if (labels.every((l) => !l)) return null;
+
+  const datasets = candidateMetrics.map((metric, idx) => ({
+    label: titleCaseFromKey(metric),
+    data: rows.map((r) => num(r[metric])),
+    backgroundColor: PALETTE[idx % PALETTE.length],
+  }));
+
+  return { labels, datasets };
 }
 
 /**
@@ -475,18 +553,34 @@ export const QueryResultChart: React.FC<QueryResultChartProps> = ({
   );
 
   if (resolvedChart.kind === 'bar') {
-    const d = {
-      labels: data.map((x) => x.label.length > 12 ? x.label.substring(0, 12) + '...' : x.label),
-      datasets: [
-        {
-          label: resolvedChart.yAxisLabel || resolvedChart.title || 'Value',
-          data: data.map((x) => x.value),
-          backgroundColor: PALETTE[0],
-          borderRadius: 6,
-          borderSkipped: false,
-        },
-      ],
-    };
+    const stackedSourceRows =
+      dataTable && dataTable.length > 0
+        ? dataTable
+        : (resolvedChart.data as Record<string, unknown>[]);
+    const stacked = resolveStackedBarData(stackedSourceRows, resolvedChart, chartRecommendation);
+    const isStacked = !!stacked;
+    const barColors = data.map((_, idx) => PALETTE[idx % PALETTE.length]);
+    const d = isStacked
+      ? {
+          labels: (stacked?.labels ?? []).map((x) => x.length > 12 ? x.substring(0, 12) + '...' : x),
+          datasets: (stacked?.datasets ?? []).map((ds) => ({
+            ...ds,
+            borderRadius: 4,
+            borderSkipped: false as const,
+          })),
+        }
+      : {
+          labels: data.map((x) => x.label.length > 12 ? x.label.substring(0, 12) + '...' : x.label),
+          datasets: [
+            {
+              label: resolvedChart.yAxisLabel || resolvedChart.title || 'Value',
+              data: data.map((x) => x.value),
+              backgroundColor: barColors,
+              borderRadius: 6,
+              borderSkipped: false,
+            },
+          ],
+        };
     return (
       <div className={wrapClass}>
         <h3 className="mb-3 text-base font-semibold text-[#0b5fa5]">{titleOf(resolvedChart)}</h3>
@@ -498,25 +592,28 @@ export const QueryResultChart: React.FC<QueryResultChartProps> = ({
               responsive: true,
               maintainAspectRatio: false,
               plugins: {
-                legend: { display: false },
+                legend: { display: isStacked, position: 'bottom' },
                 tooltip: { 
                   callbacks: { 
-                    title: (ctx) => data[ctx[0].dataIndex].label,
-                    label: (ctx) => ` ${(ctx.parsed.y ?? 0).toLocaleString()}` 
+                    title: (ctx) =>
+                      isStacked
+                        ? String(stacked?.labels?.[ctx[0].dataIndex] ?? ctx[0].label ?? '')
+                        : (data[ctx[0].dataIndex]?.label ?? String(ctx[0].label ?? '')),
+                    label: (ctx) => ` ${(ctx.parsed.y ?? 0).toLocaleString()}`,
                   } 
                 },
               },
               scales: {
                 x: { 
-                  title: { display: true, text: resolvedChart.description || 'Category' },
-                  ticks: { maxRotation: 45, minRotation: 45 }
+                  title: { display: true, text: isStacked ? 'HCP' : (resolvedChart.description || 'Category') },
+                  ticks: { maxRotation: 45, minRotation: 45 },
+                  stacked: isStacked,
                 },
                 y: {
-                  title: { display: true, text: resolvedChart.yAxisLabel || 'Value' },
-                  beginAtZero: shouldBeginAtZero,
-                  ...(shouldBeginAtZero
-                    ? {}
-                    : { min: yMinPadded, max: yMaxPadded }),
+                  title: { display: true, text: isStacked ? 'Payer Share (%)' : (resolvedChart.yAxisLabel || 'Value') },
+                  beginAtZero: true,
+                  ...(isStacked ? {} : (!shouldBeginAtZero ? { min: yMinPadded, max: yMaxPadded } : {})),
+                  stacked: isStacked,
                 },
               },
             }}
@@ -535,7 +632,7 @@ export const QueryResultChart: React.FC<QueryResultChartProps> = ({
           label: resolvedChart.yAxisLabel || resolvedChart.title || 'Value',
           data: data.map((x) => x.value),
           borderColor: PALETTE[0],
-          backgroundColor: 'rgba(11,95,165,0.15)',
+          backgroundColor: hexToRgba(PALETTE[0], 0.15),
           tension: 0.4,
           pointRadius: 5,
           pointHoverRadius: 7,

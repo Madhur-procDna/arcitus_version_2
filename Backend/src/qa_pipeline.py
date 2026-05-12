@@ -646,6 +646,22 @@ def _zoryve_trx_volume_column_for_chart(rows: list[dict], label_col: str, metric
     return metric_col
 
 
+def _has_multiple_metric_columns(rows: list) -> bool:
+    """Return True when rows have ≥2 distinct numeric columns — signals multi-series/payer-mix data."""
+    if not rows:
+        return False
+    numeric_cols = 0
+    for v in rows[0].values():
+        if v is None:
+            continue
+        try:
+            float(str(v).replace(",", ""))
+            numeric_cols += 1
+        except (ValueError, TypeError):
+            pass
+    return numeric_cols >= 2
+
+
 def _suggest_chart(question: str, rows: list[dict]) -> dict | None:
     """
     Return a chart payload when the data and question clearly warrant a chart.
@@ -2699,7 +2715,7 @@ def _emit_override_response(
         "sql_agent_llm_rounds": 0,
         "sql_agent_sql_steps": 1,
     }
-    if rows and len(rows) > 10:
+    if rows and (len(rows) > 10 or _has_multiple_metric_columns(rows)):
         cols = list(rows[0].keys())
         out["result_table"] = {
             "columns": cols,
@@ -2896,8 +2912,9 @@ def _run_single_question(
         "sql_agent_sql_steps": len(resp.all_queries or []),
     }
 
-    # result_table: full row payload for CSV download — only when there are more than 10 rows.
-    if not err and trend_rows and len(trend_rows) > 10:
+    # result_table: full row payload for CSV download — when >10 rows, or when rows have
+    # multiple numeric columns (multi-series / payer-mix data needing stacked charts).
+    if not err and trend_rows and (len(trend_rows) > 10 or _has_multiple_metric_columns(trend_rows)):
         cols = list(trend_rows[0].keys()) if trend_rows else []
         out["result_table"] = {
             "columns": cols,
