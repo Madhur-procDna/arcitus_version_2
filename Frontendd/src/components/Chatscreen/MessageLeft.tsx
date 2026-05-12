@@ -37,6 +37,8 @@ export interface AssistantMessageMeta {
   /** How many rows to show before expand (explicit N from question, else 10, or 1 for bare "top/most"). */
   result_display_preview_rows?: number;
   clarification_needed?: string | null;
+  /** LLM-generated follow-up question suggestions. */
+  followup_questions?: string[];
 }
 
 interface MessageLeftProps {
@@ -48,6 +50,8 @@ interface MessageLeftProps {
   onSubmitClarification?: (text: string) => void;
   /** Called when the user clicks the regenerate button — re-submits the paired question bypassing cache. */
   onRegenerate?: () => void;
+  /** Called when the user clicks a follow-up suggestion chip. */
+  onFollowupClick?: (question: string) => void;
 }
 
 function formatCell(v: unknown): string {
@@ -108,6 +112,7 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
   pairedUserQuestion,
   onSubmitClarification,
   onRegenerate,
+  onFollowupClick,
 }) => {
   const [clarificationText, setClarificationText] = useState('');
   const hasClarification =
@@ -390,6 +395,22 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
                 )}
               </div>
             </div>
+
+            {/* Follow-up suggestion chips */}
+            {!isLoading && meta?.followup_questions && meta.followup_questions.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2 px-1">
+                {meta.followup_questions.map((q, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => onFollowupClick?.(q)}
+                    className="rounded-full border border-[#005CD9] bg-white px-3 py-1.5 text-[12px] font-medium text-[#005CD9] hover:bg-[#005CD9] hover:text-white transition-colors text-left"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Rating and Copy Controls */}
             <div className="relative mt-2 flex items-center px-6 gap-3">

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from config import settings
 from conversation_context import ConversationBuffer
@@ -644,6 +645,92 @@ def _zoryve_trx_volume_column_for_chart(rows: list[dict], label_col: str, metric
             ):
                 return k
     return metric_col
+
+
+def _call_azure_openai_chat(messages: list, temperature: float = 0.2, max_tokens: int = 300) -> dict:
+    """Thin wrapper around Azure OpenAI chat completions — reuses the same credentials as SQLAgent."""
+    from openai import AzureOpenAI
+    client = AzureOpenAI(
+        api_key=settings.azure_openai_api_key,
+        azure_endpoint=settings.azure_openai_endpoint,
+        api_version=settings.azure_openai_api_version,
+    )
+    resp = client.chat.completions.create(
+        model=settings.azure_openai_deployment,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return resp.model_dump()
+
+
+def _fallback_followup_questions(question: str, rows: list) -> List[str]:
+    """Static rule-based fallback when the LLM call fails."""
+    q = question.lower()
+    if any(w in q for w in ["top", "highest", "most"]):
+        return [
+            "Can you show the same breakdown by region or state?",
+            "What is the trend for these HCPs over the past quarters?",
+        ]
+    if any(w in q for w in ["payer", "mix", "commercial", "medicare"]):
+        return [
+            "Which payer has the highest share for the top prescribers?",
+            "How does the payer mix compare across different regions?",
+        ]
+    if any(w in q for w in ["trend", "quarter", "month", "time"]):
+        return [
+            "Which HCPs showed the highest growth over this period?",
+            "Can you break down this trend by specialty or region?",
+        ]
+    return [
+        "Can you filter this by a specific region or state?",
+        "What are the top performers in this category?",
+    ]
+
+
+def _generate_followup_questions(question: str, rows: List[Dict[str, Any]], answer: str) -> List[str]:
+    sample_rows = rows[:3] if rows else []
+    payload = {
+        "question": question,
+        "answer": answer[:1200],
+        "columns": list(rows[0].keys()) if rows else [],
+        "sample_rows": sample_rows,
+    }
+    system = (
+        "You generate short, business-relevant follow-up questions for a pharma analytics chat. "
+        "Use only the provided question and data. Return valid JSON with a single key 'followups' "
+        "mapped to exactly 2 strings. Each string must be a clear follow-up question. "
+        "Do not add bullets, numbering, or extra text."
+    )
+    user = (
+        "Create exactly 2 follow-up questions from this context.\n"
+        "One should ask for a useful drill-down or segmentation.\n"
+        "The other should ask for a comparison, alternate cut, or deeper business angle.\n"
+        "Keep each question concise and grounded in the data.\n\n"
+        f"Context:\n{json.dumps(payload, ensure_ascii=True, default=str)}"
+    )
+    try:
+        resp = _call_azure_openai_chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2,
+            max_tokens=300,
+        )
+        content = resp["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE | re.DOTALL).strip()
+        if not content.startswith("{"):
+            match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+            if match:
+                content = match.group(0)
+        parsed = json.loads(content)
+        followups = parsed.get("followups", [])
+        if isinstance(followups, list):
+            cleaned = [str(item).strip() for item in followups if str(item).strip()]
+            if len(cleaned) >= 2:
+                return cleaned[:2]
+    except Exception:
+        pass
+    return _fallback_followup_questions(question, rows)
 
 
 def _has_multiple_metric_columns(rows: list) -> bool:

@@ -49,6 +49,7 @@ from qa_pipeline import (  # noqa: E402
     run_question_pipeline_turn,
     sanitize_user_visible_text,
     strip_sql_from_nl_chat_markup,
+    _generate_followup_questions,
 )
 from redis_cache import redis_qa_cache_status  # noqa: E402
 from fastapi import FastAPI, Query, Request  # noqa: E402
@@ -780,6 +781,21 @@ async def query(request: Request) -> JSONResponse:
                 normalized["data_table"] = fallback_pie_chart["data"]
             else:
                 fallback_pie_chart = None  # SQL data is equally complete — don't override
+    # Generate follow-up suggestions — rows are optional context, answer text is enough.
+    _followup_rows = (
+        (normalized.get("data_table") or [])
+        or (out.get("result_table") or {}).get("rows") or []
+    )
+    _followup_answer = normalized.get("answer_text") or ""
+    _followup_questions: list = []
+    if _followup_answer.strip() and not out.get("cache_hit"):
+        try:
+            _followup_questions = _generate_followup_questions(
+                original_question or question, _followup_rows, _followup_answer
+            )
+        except Exception:
+            pass
+
     body: Dict[str, Any] = {
         "success": True,
         "response": sanitize_user_visible_text(chat_nl) or chat_nl,
@@ -790,6 +806,7 @@ async def query(request: Request) -> JSONResponse:
         "sql": out.get("sql"),
         "row_count": out.get("row_count", 0),
         "cache_hit": bool(out.get("cache_hit")),
+        "followup_questions": _followup_questions,
     }
     # When the text-fallback has MORE segments than the pipeline chart, prefer the fallback
     # so the pie chart shows all segments (e.g. Commercial + Medicare + Medicaid, not just 2).

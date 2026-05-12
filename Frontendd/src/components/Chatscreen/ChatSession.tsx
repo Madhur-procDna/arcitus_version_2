@@ -484,6 +484,7 @@ const ChatSession: React.FC<ChatSessionProps> = ({ chatId }) => {
                 row_count: result.row_count,
                 result_display_preview_rows: inferResultTablePreviewRowLimit(text),
                 clarification_needed: result.clarification_needed,
+                followup_questions: result.followup_questions,
               }
             : { failed: true },
         };
@@ -578,6 +579,7 @@ const ChatSession: React.FC<ChatSessionProps> = ({ chatId }) => {
                         void handleSubmit(text);
                       }}
                       onRegenerate={pairedUserQuestion ? () => void handleRegenerate(pairedUserQuestion) : undefined}
+                      onFollowupClick={(q) => void handleSubmit(q)}
                     />
                   );
                 })}

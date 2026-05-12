@@ -41,6 +41,7 @@ interface QueryResponse {
   result_table_multipart_last_part?: boolean;
   /** Multiple independent answers (semicolon-separated NL in one request). */
   sub_results?: SubQueryResult[];
+  followup_questions?: string[];
 }
 
 /** `queryChat` return value — check `ok` before treating as a successful data answer. */
@@ -59,6 +60,7 @@ export interface QueryChatResult {
   result_table?: ResultTablePayload;
   result_table_multipart_last_part?: boolean;
   sub_results?: SubQueryResult[];
+  followup_questions?: string[];
 }
 
 /** Completed user → assistant pairs (oldest first). Sent when the server has no in-RAM buffer so multi-turn still works across workers / reloads. */
@@ -331,6 +333,7 @@ export const queryChat = async ({
       result_table: resultTable,
       result_table_multipart_last_part: Boolean(data.result_table_multipart_last_part),
       sub_results,
+      followup_questions: Array.isArray(data.followup_questions) ? data.followup_questions as string[] : [],
     };
   }
   return {
