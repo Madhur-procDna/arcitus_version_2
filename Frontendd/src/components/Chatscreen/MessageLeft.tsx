@@ -244,7 +244,7 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
             />
           </div>
         </div>
-        <div className="max-w-[70%]">
+        <div className="w-[55%]">
           <div className="flex items-start space-x-3">
             <div className="flex-1">
               <div className="bg-white rounded-[20px] rounded-tl-[4px] px-5 py-3.5 shadow-sm border border-gray-100">
@@ -275,7 +275,7 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
           />
         </div>
       </div>
-      <div className="max-w-[70%]">
+      <div className="w-[55%]">
         <div className="flex items-start space-x-3">
           <div className="flex-1">
             <div className="bg-white rounded-[20px] rounded-tl-[4px] px-6 py-4 shadow-sm border border-gray-100">
