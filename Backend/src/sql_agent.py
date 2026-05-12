@@ -259,6 +259,36 @@ ALWAYS generate: SELECT-only, specific columns, clean readable SQL.
 Never mention table names, column names, or DB structure to the user.
 Only reference tables and columns that exist in the ERD.
 CRITICAL POSTGRES RULE: Never use `NULLIF(col, '')` or `col = ''` on numeric/integer columns. Use `col IS NULL` instead.
+## PAYER COLUMN REFERENCE GUIDE — MEMORIZE BEFORE WRITING ANY PAYER SQL
+
+-- =============================================
+-- COLUMN REFERENCE GUIDE FOR arcutis_data
+-- =============================================
+-- INDIVIDUAL PAYER VOLUMES (raw TRx counts — use to compute share %):
+--   centene_corp, united_health, cvs_health, humana, elevance_health
+--   To get share %: payer_col * 100.0 / NULLIF(total_2025_trx, 0)
+--
+-- PAYER TYPE CATEGORIES (already pre-computed % values 0–100):
+--   commecial  → commercial insurance % (DB TYPO: missing 'r', never write 'commercial')
+--   medicare   → Medicare %
+--   medicaid   → Medicaid %
+--   ⚠️  commecial minimum is ~50% — filtering commecial <= 30 ALWAYS returns 0 rows
+--
+-- TOTAL VOLUME: total_2025_trx
+-- =============================================
+
+RULE 1 — DB TYPO: The commercial payer-type column is named `commecial` (NOT `commercial`). ALWAYS write `commecial`. Alias it: `commecial AS commercial_pct`.
+
+RULE 2 — "BALANCED PAYER MIX" QUERIES: When a user asks "no single payer exceeds X% of total volume", they mean INDIVIDUAL payers (centene_corp, united_health, cvs_health, humana, elevance_health). NEVER use commecial/medicare/medicaid for this — those are payer-type buckets, not individual payers.
+Correct filter: (centene_corp * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (united_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (cvs_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (humana * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (elevance_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30
+
+RULE 3 — PAYER SHARE % (vs total volume): To compute a payer's share of ALL prescriptions, divide by NULLIF(total_2025_trx, 0). Example: `centene_corp * 100.0 / NULLIF(total_2025_trx, 0) AS centene_share_pct`. Never divide by commecial/medicare/medicaid columns.
+
+RULE 4 — "OVER-INDEXED to a payer" QUERIES: "Over-indexed to Centene" (or any individual payer) means that payer takes a HIGHER proportion of the HCP's top-5 payer mix compared to the other top-4.
+Use the SUM of the 5 payers as denominator — NOT total_2025_trx.
+Correct formula: `centene_corp * 100.0 / NULLIF(centene_corp + united_health + cvs_health + humana + elevance_health, 0) AS centene_over_index_pct`
+Then rank by `centene_over_index_pct DESC` to surface the most Centene-heavy HCPs.
+Do NOT compare Centene share to each other payer individually — compute the % of the top-5 pool and rank.
 
 ## LIMIT RULES — CRITICAL — NEVER ADD DEFAULT LIMITS
 IMPORTANT: Never add LIMIT to SQL unless user says top N, give me N, or limit to N. If user says show all or asks generally, write SQL with NO LIMIT clause.
@@ -836,9 +866,28 @@ class SQLAgent:
             correction_hint = ""
 
             for attempt in range(3):
-                sql = self._generate_sql(
-                    user_text, db_state, history, correction_hint=correction_hint
-                )
+                try:
+                    sql = self._generate_sql(
+                        user_text, db_state, history, correction_hint=correction_hint
+                    )
+                except RuntimeError as gen_exc:
+                    # LLM returned a canned rejection or no SQL at all — treat as step_error
+                    # so the retry loop can issue a correction prompt rather than crashing.
+                    step_error = f"SQL generation failed: {gen_exc}"
+                    logger.warning(
+                        "SQLAgent: _generate_sql attempt %d failed: %s — will retry.",
+                        attempt + 1, gen_exc,
+                    )
+                    if attempt < 2:
+                        correction_hint = (
+                            f"[CORRECTION REQUIRED — ATTEMPT {attempt + 2}]\n"
+                            f"Your previous response did not contain a SQL query.\n"
+                            f"You MUST return exactly one SQL query wrapped in <sql>...</sql> tags.\n"
+                            f"Do NOT refuse this question — it is a valid Arcutis data question.\n"
+                            f"Original question: {user_text}\n\n"
+                            "Write the SQL now."
+                        )
+                    continue
                 llm_rounds += 1
 
                 validation, rows, step_error = self._validate_and_execute(sql, db_state)

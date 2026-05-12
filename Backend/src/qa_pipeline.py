@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from typing import Any, Dict
@@ -1801,6 +1802,20 @@ _REJECTION_PREFIXES: tuple[str, ...] = (
     "that topic is outside my scope",
     "i didn't understand that",
     "i wasn't able to process",
+    "i don't have any data",
+    "i don't have enough data",
+    "i wasn't able to find",
+    "no data was found",
+    "no records met",
+    "no hcps met",
+    "i couldn't find any",
+    "there are no hcps",
+    "there are no records",
+    "no matching records",
+    "the dataset returned no",
+    "it appears no records",
+    "i did not find any",
+    "i could not find any",
     "i wasn't able to complete",
     "focused exclusively on arcutis",
     "i'm not able to help with that",
@@ -2773,7 +2788,8 @@ def _run_single_question(
 
     q_key = _cache_key(q)
     force_fresh = bool(_TREND_RE.search(q or "") and _MOM_QOQ_RE.search(q or ""))
-    no_cache = bool(_NO_CACHE_Q_RE.search(q or "")) or not use_cache
+    _global_cache_disabled = os.getenv("SDA_DISABLE_CACHE", "").lower() in ("1", "true", "yes")
+    no_cache = bool(_NO_CACHE_Q_RE.search(q or "")) or not use_cache or _global_cache_disabled
     if q_key and not is_time_volatile_question(q) and not force_fresh and not no_cache:
         local_hit = _LOCAL_QA_CACHE.get(q_key)
         if local_hit:
@@ -2856,7 +2872,10 @@ def _run_single_question(
             total=len(trend_rows),
         )
 
-    if conversation is not None and answer:
+    if conversation is not None and answer and _is_cacheable_answer(answer):
+        # Only add real data-bearing answers to conversation history.
+        # Never add "no data", rejections, or empty-result answers — they bias the
+        # LLM's SQL generation for future questions in the same session.
         try:
             conversation.append(q, sql_out, answer)
         except Exception:

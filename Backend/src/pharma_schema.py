@@ -184,21 +184,29 @@ def validate_arcutis_metric_sql(sql: str | None) -> list[str]:
             )
 
     # Fix 4/5: TCS is a subset; do not add TCS to Other BNST in total TRx formulas.
+    # Only flag when TCS and Other BNST are directly added together (within 80 chars),
+    # NOT when they merely appear in the same SELECT (comparison / switch queries are valid).
+    _DIRECT_ADD_WINDOW = 80
     adds_tcs_to_prior_expr = any(
-        "other_bnst" in compact[max(0, m.start() - 400):m.start()]
+        "other_bnst" in compact[max(0, m.start() - _DIRECT_ADD_WINDOW):m.start()]
         for m in re.finditer(r"\+\s*\(?\s*(?:sum\s*\()?\s*(?:coalesce\s*\()?\s*tcs_", compact)
     )
     adds_other_bnst_to_prior_tcs_expr = False
     for m in re.finditer(r"\+\s*\(?\s*(?:sum\s*\()?\s*(?:coalesce\s*\()?\s*other_bnst", compact):
-        prior = compact[max(0, m.start() - 400):m.start()]
+        prior = compact[max(0, m.start() - _DIRECT_ADD_WINDOW):m.start()]
         tcs_pos = prior.rfind("tcs_")
         # A valid query may select TCS separately and later compute ZORYVE + Other BNST.
         # Only block the reverse additive formula when TCS is the immediate formula context.
         if tcs_pos >= 0 and "zoryve" not in prior[tcs_pos:]:
             adds_other_bnst_to_prior_tcs_expr = True
             break
+    # Extra guard: skip flag when the query is a TCS-vs-ZORYVE share comparison (switch queries).
+    _is_tcs_share_comparison = bool(
+        re.search(r"zoryve.*[/÷].*tcs_|tcs_.*[/÷].*zoryve|zoryve.*share.*tcs|tcs.*zoryve.*share", compact)
+    )
     if (
-        "other_bnst" in compact
+        not _is_tcs_share_comparison
+        and "other_bnst" in compact
         and "tcs_" in compact
         and (adds_tcs_to_prior_expr or adds_other_bnst_to_prior_tcs_expr)
     ):

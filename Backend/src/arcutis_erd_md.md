@@ -126,14 +126,23 @@ prescription data for Arcutis. The dataset spans **January 2025 through March 20
 | `commercial_2025_trx` | BIGINT | 2025 commercial channel TRx |
 | `medicare_2025` | BIGINT | 2025 Medicare TRx |
 | `medicaid_2025` | BIGINT | 2025 Medicaid TRx |
-| `commecial` | DOUBLE | Commercial payer mix % (0–100) |
-| `medicare` | DOUBLE | Medicare payer mix % (0–100) |
-| `medicaid` | DOUBLE | Medicaid payer mix % (0–100) |
-| `united_health` | BIGINT | United Health payer volume |
-| `cvs_health` | BIGINT | CVS Health payer volume |
-| `centene_corp` | BIGINT | Centene Corp payer volume |
-| `humana` | BIGINT | Humana payer volume |
-| `elevance_health` | BIGINT | Elevance Health payer volume |
+| `commecial` | DOUBLE | **Payer-TYPE category % (0–100) — commercial insurance share of total TRx.** DB typo: column is `commecial` (missing 'r'); never write `commercial`. Alias as `commecial AS commercial_pct`. ⚠️ Minimum value is ~50% — NEVER filter `commecial <= 30`, it will always return 0 rows. |
+| `medicare` | DOUBLE | **Payer-TYPE category % (0–100)** — Medicare share of total TRx. |
+| `medicaid` | DOUBLE | **Payer-TYPE category % (0–100)** — Medicaid share of total TRx. |
+| `united_health` | BIGINT | **Individual payer VOLUME** — United Health raw TRx count. Use for payer-share % calculations: `united_health * 100.0 / NULLIF(total_2025_trx, 0)`. |
+| `cvs_health` | BIGINT | **Individual payer VOLUME** — CVS Health raw TRx count. |
+| `centene_corp` | BIGINT | **Individual payer VOLUME** — Centene Corp raw TRx count. |
+| `humana` | BIGINT | **Individual payer VOLUME** — Humana raw TRx count. |
+| `elevance_health` | BIGINT | **Individual payer VOLUME** — Elevance Health raw TRx count. |
+
+> ⚠️ **PAYER COLUMN MAPPING — READ BEFORE WRITING ANY PAYER-MIX SQL**
+>
+> | Use case | Correct columns |
+> |----------|----------------|
+> | "What % is commercial / Medicare / Medicaid?" | `commecial`, `medicare`, `medicaid` (already % values 0–100) |
+> | "Which individual payer dominates / over-indexed?" | `centene_corp`, `united_health`, `cvs_health`, `humana`, `elevance_health` (raw volumes — compute % yourself) |
+> | "Balanced payer mix — no single payer > 30%" | Use individual payer volumes ÷ `total_2025_trx`. **DO NOT use `commecial <= 30`** — commercial is never below 30% for any HCP. |
+> | "Balanced payer mix" correct filter | `(centene_corp * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (united_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (cvs_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (humana * 100.0 / NULLIF(total_2025_trx, 0)) <= 30 AND (elevance_health * 100.0 / NULLIF(total_2025_trx, 0)) <= 30` |
 
 ---
 

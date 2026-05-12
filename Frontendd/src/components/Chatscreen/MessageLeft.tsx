@@ -164,6 +164,15 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
     return false;
   }, [hasClarification, wantExplicitTable, wantExplicitChart, meta?.chart, meta?.chart_recommendation]);
 
+  // Hide CSV download for pie / donut charts — the raw SQL rows are not meaningful for download
+  // in this context (they include individual HCP rows that don't match the chart segments).
+  const isPieOrDonut = useMemo(() => {
+    const recType = (meta?.chart_recommendation?.chart_type ?? '').toLowerCase();
+    const legacyType = (meta?.chart?.type ?? '').toLowerCase();
+    // Use includes() not === so "pie chart", "donut chart", "donut" all match.
+    return recType.includes('pie') || recType.includes('donut') || legacyType.includes('pie') || legacyType.includes('donut');
+  }, [meta?.chart_recommendation, meta?.chart]);
+
   const markdownComponents = useMemo(() => {
     const base = {
       h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
@@ -283,7 +292,7 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
                   </ReactMarkdown>
 
                   {/* Standalone CSV Download Button immediately after text */}
-                  {hasResultTablePayload && resultTable ? (
+                  {hasResultTablePayload && resultTable && !isPieOrDonut ? (
                     <div className="mt-2 mb-2 flex flex-wrap justify-start gap-2 w-full">
                       <button
                         type="button"

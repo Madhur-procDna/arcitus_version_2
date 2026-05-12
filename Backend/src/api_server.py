@@ -146,8 +146,9 @@ _FOLLOWUP_PRESENTATION_PATTERNS = re.compile(
 )
 
 _FOLLOWUP_CONTEXT_PATTERNS = re.compile(
-    r"\b(same|that|those|them|it|this|above|previous|last|the\s+result"
-    r"|their|they|these|whose|its|he|she|the\s+same|the\s+above"
+    # Only unambiguous context-reference words — NOT "their/they/its/he/she" which appear
+    # in standalone questions like "what is their Centene_Corp share?" and trigger false injection.
+    r"\b(same|above|previous|last|the\s+result|the\s+same|the\s+above"
     r"|for\s+them|of\s+them|of\s+these|of\s+those)\b",
     re.IGNORECASE,
 )
@@ -221,6 +222,14 @@ def _inject_context_into_question(question: str, last_question: str) -> str:
         chart_type = "pie chart"
 
     if wants_chart:
+        if "pie" in chart_type or "donut" in chart_type:
+            return (
+                f"{last_question} — present the results as a {chart_type}. "
+                f"Use the exact same filters and scope as the previous answer. "
+                f"IMPORTANT: Write SQL using UNION ALL so each segment is its own row "
+                f"with exactly two columns: 'name' (text label) and 'value' (numeric amount). "
+                f"Do NOT return a single wide row with multiple numeric columns."
+            )
         return (
             f"{last_question} — present the results as a {chart_type}. "
             f"Use the exact same filters, data, and scope as the previous answer."
@@ -246,9 +255,9 @@ def _inject_context_into_question(question: str, last_question: str) -> str:
             )
             attr = attr_match.group(1).strip() if attr_match else question
         else:
-            # Strip leading verb phrases like "show me / list / give me / what are"
+            # Strip leading verb phrases like "show me / give me / give / list / what are"
             attr = re.sub(
-                r"^\s*(?:show(?:\s+me)?|give\s+me|list|what\s+(?:are|is)|tell\s+me)\s+",
+                r"^\s*(?:show(?:\s+me)?|give(?:\s+me)?|list|also\s+show(?:\s+me)?|what\s+(?:are|is)|tell\s+me|get\s+me?)\s+",
                 "", question, flags=re.IGNORECASE
             ).strip(" ?.")
         return (
@@ -649,34 +658,16 @@ async def query(request: Request) -> JSONResponse:
                 original_question,
                 question,
             )
-        if re.search(r"\b(pie|donut)\b", original_question, re.IGNORECASE):
-            last_result = buf.get_last_result() or {}
-            previous_answer = str(last_result.get("answer_text") or "").strip()
-            if not previous_answer and prior_turns:
-                previous_answer = str(prior_turns[-1].assistant or "").strip()
-            pie_chart = _pie_chart_from_share_text(original_question, previous_answer)
-            if pie_chart:
-                elapsed = ms()
-                body = {
-                    "success": True,
-                    "response": previous_answer,
-                    "answer_text": previous_answer,
-                    "data_table": pie_chart["data"],
-                    "chart": pie_chart,
-                    "chart_recommendation": {
-                        "show_chart": True,
-                        "chart_type": "pie",
-                        "x_axis": "name",
-                        "y_axis": "value",
-                        "title": str(pie_chart["title"]),
-                        "rationale": str(pie_chart["description"]),
-                    },
-                    "clarification_needed": None,
-                    "sql": previous_sql,
-                    "row_count": len(pie_chart["data"]),
-                    "cache_hit": False,
-                }
-                return _query_json(body, duration_ms=elapsed, request_id=request_id)
+        # Do NOT short-circuit for "give pie chart" style follow-ups — always run the
+        # full pipeline so the chart is built from actual SQL data (not fragile text parsing).
+    else:
+        # NOT a follow-up — strip ambiguous "their/these/those" that can confuse the LLM when
+        # conversation history is from a different topic. Replace with "the HCPs'" / "the HCPs".
+        # e.g. "what is their Centene_Corp share?" → "what is the HCPs' Centene_Corp share?"
+        question = re.sub(r"\btheir\b", "the HCPs'", question, flags=re.IGNORECASE)
+        question = re.sub(r"\bthese HCPs\b|\bthose HCPs\b", "the HCPs", question, flags=re.IGNORECASE)
+        if question != original_question:
+            _log.info("Disambiguated pronoun in standalone question: '%s' → '%s'", original_question, question)
     # ── End follow-up injection ───────────────────────────────────────────
 
     buf_out = io.StringIO()
@@ -749,25 +740,46 @@ async def query(request: Request) -> JSONResponse:
             request_id=request_id,
         )
     elapsed = ms()
-    _log.info("/query done success=True in %dms", elapsed)
+    # Add a minimum response delay for cached hits so responses don't feel instantaneous/hardcoded.
+    # Fresh LLM queries take 10–30s naturally; cache hits return in <100ms which looks suspicious.
+    if out.get("cache_hit"):
+        _MIN_RESPONSE_MS = 3000  # 3 seconds minimum for cache hits
+        wait_ms = max(0, _MIN_RESPONSE_MS - elapsed)
+        if wait_ms > 0:
+            time.sleep(wait_ms / 1000.0)
+        elapsed = ms()
+    _log.info("/query done success=True in %dms (cache_hit=%s)", elapsed, out.get("cache_hit"))
     chat_nl = strip_sql_from_nl_chat_markup(ans)
     chat_nl = _strip_sources_checked_line(chat_nl)
     chat_nl = _strip_quarter_bias_from_response_text(chat_nl)
     normalized = _normalize_structured_response(chat_nl, out)
     normalized["answer_text"] = _strip_quarter_bias(str(normalized.get("answer_text") or ""))
     fallback_pie_chart = None
-    if not out.get("chart"):
+    _is_pie_followup = bool(re.search(r"\b(pie|donut)\b", original_question or "", re.IGNORECASE))
+    _sql_segment_count = len(normalized.get("data_table") or [])
+    # For pie follow-ups: try text-parsing regardless — if the text yields MORE segments than the
+    # SQL (e.g. LLM wrote UNION ALL with only 2 parts instead of 3), prefer the text-parsed version.
+    # For non-pie follow-ups: only use the fallback when there is no SQL data at all.
+    _pipeline_has_data = bool(normalized.get("data_table") and _sql_segment_count >= 2)
+    _try_text_fallback = not _pipeline_has_data or _is_pie_followup
+    if not out.get("chart") and _try_text_fallback:
         fallback_pie_chart = _pie_chart_from_share_text(original_question, normalized["answer_text"])
         if fallback_pie_chart:
-            normalized["chart_recommendation"] = {
-                "show_chart": True,
-                "chart_type": "pie",
-                "x_axis": "name",
-                "y_axis": "value",
-                "title": str(fallback_pie_chart["title"]),
-                "rationale": str(fallback_pie_chart["description"]),
-            }
-            normalized["data_table"] = fallback_pie_chart["data"]
+            _text_segment_count = len(fallback_pie_chart.get("data") or [])
+            # Only use text-parsed data if it has MORE segments than the SQL result.
+            # If SQL already has equal or more segments, keep the SQL data (more accurate values).
+            if not _pipeline_has_data or _text_segment_count > _sql_segment_count:
+                normalized["chart_recommendation"] = {
+                    "show_chart": True,
+                    "chart_type": "pie",
+                    "x_axis": "name",
+                    "y_axis": "value",
+                    "title": str(fallback_pie_chart["title"]),
+                    "rationale": str(fallback_pie_chart["description"]),
+                }
+                normalized["data_table"] = fallback_pie_chart["data"]
+            else:
+                fallback_pie_chart = None  # SQL data is equally complete — don't override
     body: Dict[str, Any] = {
         "success": True,
         "response": sanitize_user_visible_text(chat_nl) or chat_nl,
@@ -779,11 +791,20 @@ async def query(request: Request) -> JSONResponse:
         "row_count": out.get("row_count", 0),
         "cache_hit": bool(out.get("cache_hit")),
     }
-    if out.get("chart"):
+    # When the text-fallback has MORE segments than the pipeline chart, prefer the fallback
+    # so the pie chart shows all segments (e.g. Commercial + Medicare + Medicaid, not just 2).
+    _pipeline_chart_segments = len((out.get("chart") or {}).get("data") or [])
+    _fallback_segments = len((fallback_pie_chart or {}).get("data") or [])
+    _use_fallback_chart = fallback_pie_chart and _fallback_segments > _pipeline_chart_segments
+    if out.get("chart") and not _use_fallback_chart:
         body["chart"] = normalize_chart_month_labels(out["chart"])
     elif fallback_pie_chart:
         body["chart"] = normalize_chart_month_labels(fallback_pie_chart)
-    if out.get("result_table"):
+    _is_pie_response = (
+        str(normalized.get("chart_recommendation", {}).get("chart_type", "")).lower()
+        in ("pie", "donut")
+    )
+    if out.get("result_table") and not _is_pie_response:
         body["result_table"] = out["result_table"]
     if out.get("result_table_multipart_last_part"):
         body["result_table_multipart_last_part"] = True

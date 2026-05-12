@@ -287,7 +287,8 @@ function chartRecToPayload(
       yKey = metricKey;
     }
   }
-  if (rec.chart_type === 'pie') {
+  const isPieType = rec.chart_type === 'pie' || rec.chart_type === 'donut';
+  if (isPieType) {
     yKey = resolvePieValueColumnKey(row0, xKey, yKey);
   }
 
@@ -298,10 +299,10 @@ function chartRecToPayload(
   if (rec.chart_type === 'line') {
     data.sort((a, b) => (parseMonthTime(a.name) ?? 0) - (parseMonthTime(b.name) ?? 0));
   }
-  // For pie charts, drop rows with a blank label — mixed result tables (e.g. segment
+  // For pie/donut charts, drop rows with a blank label — mixed result tables (e.g. segment
   // rows + HCP detail rows) produce entries with no segment name that create phantom
   // legend swatches.
-  if (rec.chart_type === 'pie') {
+  if (isPieType) {
     data = data.filter((r) => String(r.name ?? '').trim().length > 0);
   }
 
