@@ -173,7 +173,12 @@ const MessageLeft: React.FC<MessageLeftProps> = ({
   // in this context (they include individual HCP rows that don't match the chart segments).
   const isPieOrDonut = useMemo(() => {
     const recType = (meta?.chart_recommendation?.chart_type ?? '').toLowerCase();
-    const legacyType = (meta?.chart?.type ?? '').toLowerCase();
+    const c = meta?.chart;
+    const legacyRaw =
+      c &&
+      (String(c.kind ?? '').trim() ||
+        ('type' in c ? String((c as { type?: unknown }).type ?? '').trim() : ''));
+    const legacyType = (legacyRaw ?? '').toLowerCase();
     // Use includes() not === so "pie chart", "donut chart", "donut" all match.
     return recType.includes('pie') || recType.includes('donut') || legacyType.includes('pie') || legacyType.includes('donut');
   }, [meta?.chart_recommendation, meta?.chart]);

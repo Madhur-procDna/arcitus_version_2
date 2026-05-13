@@ -1,0 +1,17 @@
+# HTTPS on EC2: TLS terminates in Nginx. Mount certs before starting.
+#
+# Prerequisites:
+#   - deploy/certs/fullchain.pem
+#   - deploy/certs/privkey.pem
+# Set in deployment.env (or shell):
+#   NGINX_CONF_PATH=./nginx/nginx.https.conf
+#
+# Bring up:
+#   docker compose --env-file deployment.env -f docker-compose.yml -f docker-compose.https.yml up -d --build
+
+services:
+  nginx:
+    ports:
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/certs:/etc/nginx/certs:ro

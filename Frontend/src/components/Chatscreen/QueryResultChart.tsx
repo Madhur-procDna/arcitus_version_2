@@ -27,7 +27,7 @@ ChartJS.register(
   Filler,
 );
 
-export type ChartKind = 'bar' | 'pie' | 'line' | 'scatter';
+export type ChartKind = 'bar' | 'pie' | 'donut' | 'line' | 'scatter';
 
 export interface ChartPayload {
   kind: ChartKind;
@@ -41,7 +41,7 @@ export interface ChartPayload {
 /** Structured chart recommendation from LLM JSON response (Task 4 format). */
 export interface ChartRecommendation {
   show_chart: boolean;
-  chart_type: 'bar' | 'line' | 'pie' | 'scatter' | 'none';
+  chart_type: 'bar' | 'line' | 'pie' | 'donut' | 'scatter' | 'none';
   x_axis: string;
   y_axis: string;
   title: string;
@@ -417,6 +417,7 @@ function titleOf(chart: ChartPayload): string {
       bar: 'Bar Chart',
       line: 'Trend Over Time',
       pie: 'Breakdown by Segment',
+      donut: 'Breakdown by Segment',
       scatter: 'Scatter Plot',
     };
     return kindLabels[chart.kind] ?? 'Chart';
@@ -459,7 +460,10 @@ export const QueryResultChart: React.FC<QueryResultChartProps> = ({
 
     // TRUNCATE OVERCROWDED CHARTS
     // If a bar/pie chart has too many rows, slice to the top 10 to keep it readable.
-    if ((nextPayload.kind === 'bar' || nextPayload.kind === 'pie') && nextPayload.data.length > 15) {
+    if (
+      (nextPayload.kind === 'bar' || nextPayload.kind === 'pie' || nextPayload.kind === 'donut') &&
+      nextPayload.data.length > 15
+    ) {
       nextPayload.data = nextPayload.data.slice(0, 10);
       sourceData = sourceData.slice(0, 10);
     }
@@ -492,7 +496,7 @@ export const QueryResultChart: React.FC<QueryResultChartProps> = ({
       // Override title with cleanly formatted one
       if (hasHcp) {
         nextPayload.title = `Top ${rowCount} HCPs by ${formattedMetric}`;
-      } else if (nextPayload.kind === 'pie' || nextPayload.kind === 'line') {
+      } else if (nextPayload.kind === 'pie' || nextPayload.kind === 'donut' || nextPayload.kind === 'line') {
         // For pie/line let the existing chart title (from backend) pass through;
         // titleOf() will clean it if it looks like a query string.
       } else {

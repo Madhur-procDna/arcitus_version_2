@@ -13,7 +13,7 @@ export interface RecentChatMessage {
     sql?: string;
     failed?: boolean;
     chart?: {
-      kind: 'bar' | 'pie' | 'line' | 'scatter';
+      kind: 'bar' | 'pie' | 'donut' | 'line' | 'scatter';
       data: Record<string, unknown>[];
       title?: string;
       description?: string;

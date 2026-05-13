@@ -2,24 +2,34 @@
 # Compass.auxo — Docker Compose
 # ══════════════════════════════════════════════════════════════
 #
-# Usage:
-#   docker compose up --build
+# Usage (development / EC2 HTTP):
+#   docker compose --env-file .env --env-file deployment.env up --build -d
+#
+# Optional HTTPS on EC2 (after certs in deploy/certs/):
+#   Set NGINX_CONF_PATH=./nginx/nginx.https.conf in deployment.env, then:
+#   docker compose --env-file .env --env-file deployment.env \\
+#     -f docker-compose.yml -f docker-compose.https.yml up --build -d
+#
+# Host ports (production):
+#   NGINX_HTTP_PORT   — published HTTP (default 80). Use 8080 if 80 is taken.
+#   NGINX_HTTPS_PORT  — used only with docker-compose.https.yml (default 443).
+#   NGINX_CONF_PATH   — default ./nginx/nginx.conf; use ./nginx/nginx.https.conf for TLS.
+#
+# Internal service ports (do not change unless you update Dockerfiles + nginx upstreams):
+#   frontend:3000, backend:8001, redis:6379
 #
 # Access:
-#   http://localhost        → Arcutis frontend (via Nginx)
-#   http://localhost/api/backend/health  → FastAPI health check
+#   http://<host>:${NGINX_HTTP_PORT:-80}/  → Next.js (via Nginx)
+#   http://<host>:${NGINX_HTTP_PORT:-80}/api/backend/health  → FastAPI health
 #
 # ══════════════════════════════════════════════════════════════
 
 services:
-  # ── Next.js frontend (SSR / standalone) ─────────────────────
   frontend:
     build:
       context: ./Frontend
       dockerfile: Dockerfile
       args:
-        # The backend URL used by Next.js server-side proxy at runtime.
-        # This is the Docker-internal address of the FastAPI container.
         SDA_BACKEND_URL: http://backend:8001
     container_name: compass-frontend
     environment:
@@ -30,9 +40,8 @@ services:
         condition: service_started
     networks:
       - compass-net
-    # No ports exposed externally — only accessible through Nginx
+    restart: unless-stopped
 
-    # ── FastAPI backend ─────────────────────────────────────────
   backend:
     build:
       context: ./Backend
@@ -40,24 +49,24 @@ services:
     container_name: compass-backend
     env_file:
       - .env
+    environment:
+      # Always use the Compose service name (not 127.0.0.1 from a dev .env)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     depends_on:
       redis:
         condition: service_healthy
     networks:
       - compass-net
-    # No ports exposed externally — only accessible through Docker network
-    # Uncomment the next two lines for direct debugging access:
-    # ports:
-    #   - "8001:8001"
+    restart: unless-stopped
 
-    # ── Nginx reverse proxy ─────────────────────────────────────
   nginx:
     image: nginx:1.27-alpine
     container_name: compass-nginx
     ports:
-      - "80:80"
+      - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${NGINX_CONF_PATH:-./nginx/nginx.conf}:/etc/nginx/nginx.conf:ro
     depends_on:
       frontend:
         condition: service_started
@@ -67,7 +76,6 @@ services:
       - compass-net
     restart: unless-stopped
 
-  # ── Redis (cache + conversation turns) ──────────────────────
   redis:
     image: redis:7-alpine
     container_name: compass-redis
@@ -78,12 +86,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-    # No ports exposed externally — only accessible through Docker network
-    # Uncomment the next two lines for direct debugging access:
-    # ports:
-    #   - "6379:6379"
+    restart: unless-stopped
 
-    # ── Network ───────────────────────────────────────────────────
 networks:
   compass-net:
     driver: bridge
